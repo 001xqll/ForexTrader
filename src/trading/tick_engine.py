@@ -9,6 +9,7 @@ from typing import Any
 from src.brokers.binance_client import BinanceFuturesClient
 from src.brokers.binance_futures_stream import BinanceFuturesPriceStream
 from src.brokers.mt5_client import MT5Client
+from src.trading.spread import compute_binance_spread, compute_mt5_spread
 from src.trading.tick_snapshot import TickSnapshot
 
 TickCallback = Callable[[TickSnapshot], None]
@@ -222,6 +223,8 @@ class TickEngine:
         diff = None
         if mt5_bid is not None and binance_price is not None:
             diff = mt5_bid - binance_price
+        mt5_spread = compute_mt5_spread(mt5_tick)
+        binance_spread = compute_binance_spread(binance_tick)
 
         with self._emit_lock:
             self._last_emit_mono = time.perf_counter()
@@ -236,6 +239,8 @@ class TickEngine:
             mt5_bid=mt5_bid,
             binance_price=binance_price,
             diff=diff,
+            mt5_spread=mt5_spread,
+            binance_spread=binance_spread,
             fetch_duration_ms=fetch_duration_ms,
             mt5_tick=mt5_tick,
             binance_tick=binance_tick,

@@ -488,14 +488,13 @@ class OrderExecutor:
         dry_run: bool,
         api_ms: float | None = None,
     ) -> None:
-        mode = "DRY-RUN" if dry_run else "ÉLES"
         status = "OK" if success else "HIBA"
         if api_ms is not None:
             timing = f"API: {api_ms:.1f} ms"
         else:
             timing = f"{leg_duration_ms:.1f} ms order"
         self._log(
-            f"[Order {mode}] {venue} pozíció nyitva: +{elapsed_from_start_ms:.1f} ms a jeltől "
+            f"[NYITÁS] {venue} pozíció nyitva: +{elapsed_from_start_ms:.1f} ms a jeltől "
             f"({timing}) — {detail} [{status}]"
         )
 
@@ -509,11 +508,10 @@ class OrderExecutor:
         detail: str,
         dry_run: bool,
     ) -> None:
-        mode = "DRY-RUN" if dry_run else "ÉLES"
         status = "OK" if success else "HIBA"
         note = " (szimulált)" if dry_run else ""
         self._log(
-            f"[Zárás {mode}] {venue} pozíció zárva: +{elapsed_from_start_ms:.1f} ms a jeltől "
+            f"[ZÁRÁS] {venue} pozíció zárva: +{elapsed_from_start_ms:.1f} ms a jeltől "
             f"({leg_duration_ms:.1f} ms order) — {detail}{note} [{status}]"
         )
 
@@ -525,7 +523,6 @@ class OrderExecutor:
         dry_run: bool,
         action: str = "Order",
     ) -> None:
-        mode = "DRY-RUN" if dry_run else "ÉLES"
         gap = abs(mt5_elapsed_ms - binance_elapsed_ms)
         if gap < 0.05:
             first = "egyszerre"
@@ -533,10 +530,10 @@ class OrderExecutor:
             first = "MT5"
         else:
             first = "Binance"
-        prefix = "Zárás" if action == "Zárás" else "Order"
+        prefix = "ZÁRÁS" if action == "Zárás" else "NYITÁS"
         if first == "egyszerre":
-            self._log(f"[{prefix} {mode}] Lábak közti eltérés: {gap:.1f} ms (egyszerre)")
+            self._log(f"[{prefix}] Lábak közti eltérés: {gap:.1f} ms (egyszerre)")
         else:
             self._log(
-                f"[{prefix} {mode}] Lábak közti eltérés: {gap:.1f} ms ({first} előbb végzett)"
+                f"[{prefix}] Lábak közti eltérés: {gap:.1f} ms ({first} előbb végzett)"
             )

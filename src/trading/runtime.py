@@ -76,7 +76,10 @@ class TradingRuntime:
         self._log(
             f"Stratégia: bázis={strategy['base']:.2f}, szintek={strategy['levels']}, "
             f"zárás küszöb={strategy['exit_threshold']:.2f}, "
-            f"lot={strategy['lot_mt5']}, Binance qty={strategy['binance_quantity']}"
+            f"stop-loss=±{strategy['stop_loss']:g}, "
+            f"lot={strategy['lot_mt5']}, Binance qty={strategy['binance_quantity']}, "
+            f"max spread MT5={strategy['mt5_max_spread']:g}, "
+            f"Binance={strategy['binance_max_spread']:g}"
         )
 
     def update_symbol(self, symbol: dict[str, str]) -> None:

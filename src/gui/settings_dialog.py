@@ -210,8 +210,8 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(
             parent,
             text=(
-                "Kék = bázis, zöld = bázis fölötti szintek, sárga = bázis alatti szintek. "
-                "Zárás: a diff visszatér a bázis közelébe (± zárási küszöb)."
+                "Kék = bázis, zöld = bázis fölötti szintek, sárga = bázis alatti szintek, "
+                "piros = stop-loss (bázis ±). Zárás: diff a bázis közelébe (± zárási küszöb)."
             ),
             foreground="#555555",
         ).pack(anchor="w", pady=(0, 10))
@@ -222,8 +222,11 @@ class SettingsDialog(tk.Toplevel):
 
         self._strat_base = tk.StringVar(value="10.0")
         self._strat_exit_threshold = tk.StringVar(value="1.0")
+        self._strat_stop_loss = tk.StringVar(value="15.0")
         self._strat_lot = tk.StringVar(value="0.01")
         self._strat_binance_qty = tk.StringVar(value="")
+        self._strat_mt5_max_spread = tk.StringVar(value="100")
+        self._strat_binance_max_spread = tk.StringVar(value="100")
         self._strat_dry_run = tk.BooleanVar(value=True)
 
         ttk.Label(form, text="Bázis (kék vonal)").grid(row=0, column=0, sticky="w", pady=4)
@@ -232,17 +235,29 @@ class SettingsDialog(tk.Toplevel):
         ttk.Entry(form, textvariable=self._strat_exit_threshold, width=12).grid(
             row=1, column=1, sticky="w", pady=4
         )
-        ttk.Label(form, text="MT5 lot").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Entry(form, textvariable=self._strat_lot, width=12).grid(row=2, column=1, sticky="w", pady=4)
-        ttk.Label(form, text="Binance qty (üres = lot×100)").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Label(form, text="Stop-loss (bázistól ±)").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self._strat_stop_loss, width=12).grid(
+            row=2, column=1, sticky="w", pady=4
+        )
+        ttk.Label(form, text="MT5 lot").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self._strat_lot, width=12).grid(row=3, column=1, sticky="w", pady=4)
+        ttk.Label(form, text="Binance qty (üres = lot×100)").grid(row=4, column=0, sticky="w", pady=4)
         ttk.Entry(form, textvariable=self._strat_binance_qty, width=12).grid(
-            row=3, column=1, sticky="w", pady=4
+            row=4, column=1, sticky="w", pady=4
+        )
+        ttk.Label(form, text="Max spread MT5 (point)").grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self._strat_mt5_max_spread, width=12).grid(
+            row=5, column=1, sticky="w", pady=4
+        )
+        ttk.Label(form, text="Max spread Binance (USD)").grid(row=6, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self._strat_binance_max_spread, width=12).grid(
+            row=6, column=1, sticky="w", pady=4
         )
         ttk.Checkbutton(
             form,
             text="Dry-run (ne küldjön éles megbízást)",
             variable=self._strat_dry_run,
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         ttk.Label(parent, text="Szintek távolsága a bázistól:").pack(anchor="w", pady=(12, 4))
         self._strategy_levels: list[float] = []
@@ -515,10 +530,13 @@ class SettingsDialog(tk.Toplevel):
         strategy = self._config.get("strategy", {})
         self._strat_base.set(str(strategy.get("base", 10.0)))
         self._strat_exit_threshold.set(str(strategy.get("exit_threshold", 1.0)))
+        self._strat_stop_loss.set(str(strategy.get("stop_loss", 15.0)))
         self._strat_lot.set(str(strategy.get("lot_mt5", 0.01)))
         qty = strategy.get("binance_quantity") or 0
         self._strat_binance_qty.set("" if float(qty or 0) <= 0 else str(qty))
         self._strat_dry_run.set(bool(strategy.get("dry_run", True)))
+        self._strat_mt5_max_spread.set(str(strategy.get("mt5_max_spread", 100.0)))
+        self._strat_binance_max_spread.set(str(strategy.get("binance_max_spread", 100.0)))
         self._strategy_levels = [float(level) for level in strategy.get("levels", [5.0, 10.0])]
         self._strategy_levels.sort()
         self._selected_level_index = 0
@@ -572,17 +590,28 @@ class SettingsDialog(tk.Toplevel):
         try:
             base = float(self._strat_base.get().strip().replace(",", "."))
             exit_threshold = float(self._strat_exit_threshold.get().strip().replace(",", "."))
+            stop_loss = float(self._strat_stop_loss.get().strip().replace(",", "."))
             lot_mt5 = float(self._strat_lot.get().strip().replace(",", "."))
             qty_raw = self._strat_binance_qty.get().strip().replace(",", ".")
             binance_qty = float(qty_raw) if qty_raw else 0.0
+            mt5_max_spread = float(self._strat_mt5_max_spread.get().strip().replace(",", "."))
+            binance_max_spread = float(
+                self._strat_binance_max_spread.get().strip().replace(",", ".")
+            )
         except ValueError:
             messagebox.showerror("Hiba", "A stratégia numerikus mezői csak számok lehetnek.")
             return
         if exit_threshold < 0:
             messagebox.showerror("Hiba", "A zárási küszöb nem lehet negatív.")
             return
+        if stop_loss < 0:
+            messagebox.showerror("Hiba", "A stop-loss nem lehet negatív.")
+            return
         if lot_mt5 <= 0:
             messagebox.showerror("Hiba", "Az MT5 lot pozitív kell legyen.")
+            return
+        if mt5_max_spread < 0 or binance_max_spread < 0:
+            messagebox.showerror("Hiba", "A max spread nem lehet negatív.")
             return
         if not self._strategy_levels:
             messagebox.showerror("Hiba", "Legalább egy szintet adj meg.")
@@ -592,8 +621,11 @@ class SettingsDialog(tk.Toplevel):
             "base": base,
             "levels": sorted(self._strategy_levels),
             "exit_threshold": exit_threshold,
+            "stop_loss": stop_loss,
             "lot_mt5": lot_mt5,
             "binance_quantity": binance_qty,
+            "mt5_max_spread": mt5_max_spread,
+            "binance_max_spread": binance_max_spread,
             "dry_run": bool(self._strat_dry_run.get()),
         }
 

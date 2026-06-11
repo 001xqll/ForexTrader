@@ -36,7 +36,7 @@ class LogViewerDialog(tk.Toplevel):
         self._text = scrolledtext.ScrolledText(
             self,
             wrap="word",
-            font=("Consolas", 9),
+            font=("Consolas", 11),
         )
         self._text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self._text.configure(state="disabled")

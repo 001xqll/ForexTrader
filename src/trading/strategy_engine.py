@@ -19,6 +19,7 @@ class StrategyEngine:
     """Spread szint stratégia — ProTrader logika alapján."""
 
     MISMATCH_RECHECK_SEC = 30.0
+    SPREAD_BLOCK_LOG_SEC = 30.0
 
     def __init__(
         self,
@@ -39,6 +40,8 @@ class StrategyEngine:
         self._position_mismatch = False
         self._mismatch_reason = ""
         self._last_mismatch_recheck_mono = 0.0
+        self._last_spread_block_log_mono = 0.0
+        self._post_sl_lock = False
         self._mismatch_callback: MismatchCallback | None = None
 
     @property
@@ -58,11 +61,13 @@ class StrategyEngine:
 
     def reset_levels(self) -> None:
         self._levels_hit.clear()
+        self._post_sl_lock = False
 
     def clear_trading_block(self) -> None:
         self._set_position_mismatch(False)
         self._mismatch_reason = ""
         self._symbol = None
+        self._post_sl_lock = False
 
     def _set_position_mismatch(self, active: bool, *, reason: str = "") -> None:
         if active == self._position_mismatch and (not active or reason == self._mismatch_reason):
@@ -89,6 +94,7 @@ class StrategyEngine:
                 self._log("Pozíció eltérés megszűnt — kereskedés folytatódik.")
             self._set_position_mismatch(False)
             self._levels_hit.clear()
+            self._post_sl_lock = False
             self._log("Nincs nyitott pozíció — szintek törölve.")
             return
 
@@ -147,28 +153,95 @@ class StrategyEngine:
 
         base = float(strategy["base"])
         exit_threshold = float(strategy["exit_threshold"])
+        stop_loss = float(strategy["stop_loss"])
         levels: list[float] = list(strategy["levels"])
         lot_mt5 = float(strategy["lot_mt5"])
         binance_qty = float(strategy["binance_quantity"])
         diff = float(snapshot.diff or 0)
         dist_from_base = diff - base
 
+        if self._post_sl_lock and abs(dist_from_base) <= exit_threshold:
+            self._post_sl_lock = False
+            if not self._order_executor.dry_run:
+                self._log(
+                    f"[Stop-loss] A diff visszatért a bázis közelébe "
+                    f"(távolság={dist_from_base:+.2f}, küszöb=±{exit_threshold:g}) — "
+                    "újra nyitható."
+                )
+
+        if (
+            stop_loss > 0
+            and self._levels_hit.keys()
+            and abs(dist_from_base) >= stop_loss
+        ):
+            if not self._spread_allows_trading(snapshot, strategy):
+                self._log_spread_blocked(snapshot, strategy, "stop-loss zárás")
+                return
+            self._stop_loss_close(snapshot, base, dist_from_base, stop_loss)
+            return
+
         if self._levels_hit.has_direction("pos") and dist_from_base <= exit_threshold:
+            if not self._spread_allows_trading(snapshot, strategy):
+                self._log_spread_blocked(snapshot, strategy, "take-profit zárás")
+                return
             self._close_direction(snapshot, "pos", base, dist_from_base, exit_threshold)
             return
 
         if self._levels_hit.has_direction("neg") and dist_from_base >= -exit_threshold:
+            if not self._spread_allows_trading(snapshot, strategy):
+                self._log_spread_blocked(snapshot, strategy, "take-profit zárás")
+                return
             self._close_direction(snapshot, "neg", base, dist_from_base, exit_threshold)
+            return
+
+        if self._post_sl_lock:
             return
 
         for level in levels:
             if diff >= base + level and not self._levels_hit.is_hit(level, "pos"):
+                if not self._spread_allows_trading(snapshot, strategy):
+                    self._log_spread_blocked(snapshot, strategy, "nyitás")
+                    return
                 self._open_at_level(snapshot, level, "pos", lot_mt5, binance_qty, base)
                 return
 
             if diff <= base - level and not self._levels_hit.is_hit(level, "neg"):
+                if not self._spread_allows_trading(snapshot, strategy):
+                    self._log_spread_blocked(snapshot, strategy, "nyitás")
+                    return
                 self._open_at_level(snapshot, level, "neg", lot_mt5, binance_qty, base)
                 return
+
+    @staticmethod
+    def _spread_allows_trading(snapshot: TickSnapshot, strategy: dict) -> bool:
+        max_mt5 = float(strategy["mt5_max_spread"])
+        max_binance = float(strategy["binance_max_spread"])
+        if snapshot.mt5_spread is None or snapshot.binance_spread is None:
+            return False
+        return snapshot.mt5_spread <= max_mt5 and snapshot.binance_spread <= max_binance
+
+    def _log_spread_blocked(
+        self,
+        snapshot: TickSnapshot,
+        strategy: dict,
+        action: str,
+    ) -> None:
+        if self._order_executor.dry_run:
+            return
+        now = time.perf_counter()
+        if now - self._last_spread_block_log_mono < self.SPREAD_BLOCK_LOG_SEC:
+            return
+        self._last_spread_block_log_mono = now
+        max_mt5 = float(strategy["mt5_max_spread"])
+        max_binance = float(strategy["binance_max_spread"])
+        mt5_text = f"{snapshot.mt5_spread:.2f}" if snapshot.mt5_spread is not None else "—"
+        binance_text = (
+            f"{snapshot.binance_spread:.2f}" if snapshot.binance_spread is not None else "—"
+        )
+        self._log(
+            f"[Spread] {action} kihagyva — MT5: {mt5_text} (max {max_mt5:g}), "
+            f"Binance: {binance_text} (max {max_binance:g})"
+        )
 
     @staticmethod
     def _format_diff_prices(snapshot: TickSnapshot) -> str:
@@ -217,6 +290,36 @@ class StrategyEngine:
         finally:
             self._order_in_flight = False
 
+    def _stop_loss_close(
+        self,
+        snapshot: TickSnapshot,
+        base: float,
+        dist_from_base: float,
+        stop_loss: float,
+    ) -> None:
+        dry_run = self._order_executor.dry_run
+        self._order_in_flight = True
+        if not dry_run:
+            prices = self._format_diff_prices(snapshot)
+            log_warning(
+                f"!!! STOP-LOSS !!! diff={snapshot.diff:+.2f} (bázis={base:.2f}, "
+                f"távolság={dist_from_base:+.2f}, limit=±{stop_loss:g}){prices}"
+            )
+        try:
+            direction = "pos" if self._levels_hit.has_direction("pos") else "neg"
+            result = self._order_executor.close_hedge_pair(snapshot, direction=direction)
+            if result.success:
+                self._levels_hit.clear()
+                self._post_sl_lock = True
+                if not dry_run:
+                    exit_threshold = float(get_strategy_config()["exit_threshold"])
+                    self._log(
+                        "[Stop-loss] Összes pozíció zárva — újranyitás tiltva, "
+                        f"várakozás a bázis ±{exit_threshold:g} zónáig."
+                    )
+        finally:
+            self._order_in_flight = False
+
     def _close_direction(
         self,
         snapshot: TickSnapshot,
@@ -228,25 +331,16 @@ class StrategyEngine:
         dry_run = self._order_executor.dry_run
         self._order_in_flight = True
         if not dry_run:
-            stack_label = "SHORT stack (MT5 SHORT + Binance LONG)" if direction == "pos" else (
-                "LONG stack (MT5 LONG + Binance SHORT)"
-            )
-            self._log(
-                f"[Zárás {stack_label}] diff={snapshot.diff:+.2f} (bázis={base:.2f}, "
-                f"távolság={dist_from_base:+.2f}, küszöb=±{exit_threshold:g})"
+            prices = self._format_diff_prices(snapshot)
+            log_warning(
+                f"!!! TAKE-PROFIT !!! diff={snapshot.diff:+.2f} (bázis={base:.2f}, "
+                f"távolság={dist_from_base:+.2f}, limit=±{exit_threshold:g}){prices}"
             )
         try:
             result = self._order_executor.close_hedge_pair(snapshot, direction=direction)
             if result.success:
                 self._levels_hit.clear_direction(direction)
                 if not dry_run:
-                    stack_label = (
-                        "SHORT stack (MT5 SHORT + Binance LONG)"
-                        if direction == "pos"
-                        else "LONG stack (MT5 LONG + Binance SHORT)"
-                    )
-                    self._log(
-                        f"[Zárás] {stack_label} szintek törölve: {self._levels_hit.keys()}"
-                    )
+                    self._log("[ZÁRÁS] szintek törölve")
         finally:
             self._order_in_flight = False

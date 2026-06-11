@@ -43,6 +43,7 @@ class DiffChartPanel(ttk.Frame):
         self._title_symbol = ""
         self._strategy_base: float | None = None
         self._strategy_levels: list[float] = []
+        self._strategy_stop_loss: float | None = None
 
         self.clear()
 
@@ -55,6 +56,7 @@ class DiffChartPanel(ttk.Frame):
         self._hist_loading = False
         self._strategy_base = None
         self._strategy_levels = []
+        self._strategy_stop_loss = None
         self._ax.clear()
         self._ax.set_title("Különbségi árfolyam (MT5 − Binance)")
         self._ax.text(
@@ -74,9 +76,15 @@ class DiffChartPanel(ttk.Frame):
             return True
         return time.time() - self._last_hist_refresh >= self.HIST_REFRESH_SEC
 
-    def set_strategy_levels(self, base: float, levels: list[float]) -> None:
+    def set_strategy_levels(
+        self,
+        base: float,
+        levels: list[float],
+        stop_loss: float | None = None,
+    ) -> None:
         self._strategy_base = float(base)
         self._strategy_levels = sorted({float(level) for level in levels if float(level) > 0})
+        self._strategy_stop_loss = float(stop_loss) if stop_loss and float(stop_loss) > 0 else None
         if self._df_cache is not None:
             self._draw_static(self._df_cache)
 
@@ -107,6 +115,10 @@ class DiffChartPanel(ttk.Frame):
         chart_refresh_ms: int,
         tick_refresh_ms: int | None = None,
         tick_source: str | None = None,
+        mt5_spread: float | None = None,
+        binance_spread: float | None = None,
+        mt5_max_spread: float | None = None,
+        binance_max_spread: float | None = None,
     ) -> None:
         if self._df_cache is None or current_diff is None:
             return
@@ -125,6 +137,10 @@ class DiffChartPanel(ttk.Frame):
 
         mt5_text = f"{mt5_bid:.2f}" if mt5_bid is not None else "—"
         bin_text = f"{binance_price:.2f}" if binance_price is not None else "—"
+        mt5_spread_text = f"{mt5_spread:.2f}" if mt5_spread is not None else "—"
+        bin_spread_text = f"{binance_spread:.2f}" if binance_spread is not None else "—"
+        mt5_max_text = f"{mt5_max_spread:g}" if mt5_max_spread is not None else "—"
+        bin_max_text = f"{binance_max_spread:g}" if binance_max_spread is not None else "—"
         tick_ms = tick_refresh_ms if tick_refresh_ms is not None else chart_refresh_ms
         if tick_source == "binance_ws":
             binance_mode = "WS"
@@ -134,8 +150,10 @@ class DiffChartPanel(ttk.Frame):
             binance_mode = "—"
         self._ax.set_title(
             f"{self._title_symbol}  ·  D1 különbség (30 nap)\n"
-            f"Élő: {current_diff:+.2f}   MT5: {mt5_text}   Binance: {bin_text} ({binance_mode})   "
-            f"(tick ~{tick_ms} ms, grafikon ~{chart_refresh_ms} ms)",
+            f"Élő: {current_diff:+.2f}   MT5: {mt5_text}   Binance: {bin_text} ({binance_mode})\n"
+            f"Spread MT5: {mt5_spread_text}/{mt5_max_text} pt   "
+            f"Binance: {bin_spread_text}/{bin_max_text} USD   "
+            f"(tick ~{tick_ms} ms, rajz ~{chart_refresh_ms} ms)",
             fontsize=10,
         )
         self._canvas.draw_idle()
@@ -203,6 +221,23 @@ class DiffChartPanel(ttk.Frame):
                 linestyle="--",
                 linewidth=1.0,
                 alpha=0.75,
+            )
+        if self._strategy_stop_loss is not None:
+            sl = self._strategy_stop_loss
+            self._ax.axhline(
+                base + sl,
+                color="#dc2626",
+                linestyle="-",
+                linewidth=1.6,
+                alpha=0.95,
+                label="Stop-loss",
+            )
+            self._ax.axhline(
+                base - sl,
+                color="#dc2626",
+                linestyle="-",
+                linewidth=1.6,
+                alpha=0.95,
             )
 
     def _draw_static(self, df_diff: pd.DataFrame) -> None:

@@ -29,6 +29,8 @@ from src.trading.tick_snapshot import TickSnapshot
 
 
 class TradingApp(tk.Tk):
+    LOG_FONT = ("Consolas", 11)
+    LOG_WARNING_FONT = ("Consolas", 11, "bold")
     MARKET_CHECK_SEC = 30
     DEFAULT_WIDTH = 1120
     DEFAULT_HEIGHT = 1000
@@ -138,7 +140,7 @@ class TradingApp(tk.Tk):
             log_frame,
             height=12,
             wrap="none",
-            font=("Consolas", 9),
+            font=self.LOG_FONT,
         )
         self._log_hscroll = ttk.Scrollbar(
             log_frame,
@@ -149,7 +151,7 @@ class TradingApp(tk.Tk):
         self._log_text.tag_configure(
             "log_warning",
             foreground="#b91c1c",
-            font=("Consolas", 9, "bold"),
+            font=self.LOG_WARNING_FONT,
         )
         self._log_text.tag_configure("log_warning_sep", foreground="#b91c1c")
         self._log_text.pack(fill="both", expand=True)
@@ -295,7 +297,11 @@ class TradingApp(tk.Tk):
 
     def _apply_chart_strategy_levels(self) -> None:
         strategy = get_strategy_config()
-        self._chart.set_strategy_levels(strategy["base"], strategy["levels"])
+        self._chart.set_strategy_levels(
+            strategy["base"],
+            strategy["levels"],
+            stop_loss=strategy.get("stop_loss"),
+        )
 
     def _load_history_if_needed(self, force: bool = False) -> None:
         symbol = self._get_current_symbol()
@@ -345,6 +351,7 @@ class TradingApp(tk.Tk):
         if not snapshot.is_complete:
             return
 
+        strategy = get_strategy_config()
         self._chart.update_live(
             snapshot.diff,
             snapshot.mt5_bid,
@@ -352,6 +359,10 @@ class TradingApp(tk.Tk):
             chart_refresh_ms=get_chart_refresh_ms(load_config()),
             tick_refresh_ms=get_price_refresh_ms(load_config()),
             tick_source=snapshot.source,
+            mt5_spread=snapshot.mt5_spread,
+            binance_spread=snapshot.binance_spread,
+            mt5_max_spread=float(strategy["mt5_max_spread"]),
+            binance_max_spread=float(strategy["binance_max_spread"]),
         )
 
     def _start_runtime(self) -> None:

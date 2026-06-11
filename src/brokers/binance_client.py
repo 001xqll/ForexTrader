@@ -90,17 +90,21 @@ class BinanceFuturesClient:
         if not self._connected or self._client is None or not symbol:
             return None
 
+        symbol_upper = symbol.upper()
         try:
-            ticker = self._client.futures_symbol_ticker(symbol=symbol.upper())
+            book = self._client.futures_orderbook_ticker(symbol=symbol_upper)
+            ticker = self._client.futures_symbol_ticker(symbol=symbol_upper)
         except Exception:
             return None
 
+        bid = float(book["bidPrice"])
+        ask = float(book["askPrice"])
         price = float(ticker["price"])
         return {
-            "symbol": symbol.upper(),
+            "symbol": symbol_upper,
             "price": price,
-            "bid": price,
-            "ask": price,
+            "bid": bid,
+            "ask": ask,
             "source": "rest",
         }
 

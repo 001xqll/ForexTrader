@@ -108,6 +108,7 @@ class MT5Client:
                 "ask": tick.ask,
                 "last": tick.last,
                 "digits": digits,
+                "point": info.point,
             }
 
     def get_daily_rates(self, symbol: str, count: int = 30) -> list[dict[str, Any]] | None:

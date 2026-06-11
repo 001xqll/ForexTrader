@@ -15,6 +15,8 @@ class TickSnapshot:
     mt5_bid: float | None
     binance_price: float | None
     diff: float | None
+    mt5_spread: float | None
+    binance_spread: float | None
     fetch_duration_ms: float
     mt5_tick: dict[str, Any] | None
     binance_tick: dict[str, Any] | None

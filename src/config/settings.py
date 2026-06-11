@@ -28,8 +28,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "base": 10.0,
         "levels": [5.0, 10.0],
         "exit_threshold": 1.0,
+        "stop_loss": 15.0,
         "lot_mt5": 0.01,
         "binance_quantity": 0.0,
+        "mt5_max_spread": 100.0,
+        "binance_max_spread": 100.0,
         "dry_run": True,
     },
     "ui": {
@@ -66,11 +69,14 @@ def get_strategy_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     merged["levels"] = sorted({float(level) for level in levels if float(level) > 0})
     merged["base"] = float(merged.get("base") or 0.0)
     merged["exit_threshold"] = max(0.0, float(merged.get("exit_threshold") or 1.0))
+    merged["stop_loss"] = max(0.0, float(merged.get("stop_loss") or 15.0))
     merged["lot_mt5"] = float(merged.get("lot_mt5") or 0.01)
     qty = float(merged.get("binance_quantity") or 0.0)
     if qty <= 0:
         qty = round(merged["lot_mt5"] * 100, 3)
     merged["binance_quantity"] = qty
+    merged["mt5_max_spread"] = max(0.0, float(merged.get("mt5_max_spread") or 100.0))
+    merged["binance_max_spread"] = max(0.0, float(merged.get("binance_max_spread") or 100.0))
     merged["dry_run"] = bool(merged.get("dry_run", True))
     return merged
 
