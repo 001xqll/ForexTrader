@@ -1,0 +1,326 @@
+from __future__ import annotations
+
+import tkinter as tk
+from copy import deepcopy
+from tkinter import messagebox, ttk
+from typing import Any, Callable
+
+from src.config.settings import load_config, save_config
+
+
+class SettingsDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Misc, on_saved: Callable[[], None] | None = None) -> None:
+        super().__init__(parent)
+        self.title("Csatlakozási beállítások")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self._on_saved = on_saved
+        self._config = load_config()
+
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True, padx=12, pady=12)
+
+        mt5_frame = ttk.Frame(notebook, padding=12)
+        binance_frame = ttk.Frame(notebook, padding=12)
+        symbols_frame = ttk.Frame(notebook, padding=12)
+        notebook.add(mt5_frame, text="MetaTrader 5")
+        notebook.add(binance_frame, text="Binance Futures")
+        notebook.add(symbols_frame, text="Szimbólumok")
+
+        self._mt5_vars = self._build_mt5_form(mt5_frame)
+        self._binance_vars = self._build_binance_form(binance_frame)
+        self._build_symbols_form(symbols_frame)
+
+        button_row = ttk.Frame(self)
+        button_row.pack(fill="x", padx=12, pady=(0, 12))
+
+        ttk.Button(button_row, text="Mégse", command=self.destroy).pack(side="right")
+        ttk.Button(button_row, text="Mentés", command=self._save).pack(side="right", padx=(0, 8))
+
+        self._load_values()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def _build_mt5_form(self, parent: ttk.Frame) -> dict[str, Any]:
+        vars_map: dict[str, Any] = {}
+
+        fields = [
+            ("login", "Login (számlaszám)", "int"),
+            ("password", "Jelszó", "password"),
+            ("server", "Szerver", "text"),
+            ("terminal_path", "MT5 terminál útvonal (opcionális)", "text"),
+        ]
+
+        for row, (key, label, field_type) in enumerate(fields):
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
+            if field_type == "password":
+                var = tk.StringVar()
+                widget = ttk.Entry(parent, textvariable=var, width=42, show="*")
+            elif field_type == "int":
+                var = tk.StringVar()
+                widget = ttk.Entry(parent, textvariable=var, width=42)
+            else:
+                var = tk.StringVar()
+                widget = ttk.Entry(parent, textvariable=var, width=42)
+
+            widget.grid(row=row, column=1, sticky="ew", pady=4)
+            vars_map[key] = var
+
+        parent.columnconfigure(1, weight=1)
+        ttk.Label(
+            parent,
+            text="Tipp: az MT5 terminálnak futnia kell Windows alatt.",
+            foreground="#666666",
+        ).grid(row=len(fields), column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+        return vars_map
+
+    def _build_binance_form(self, parent: ttk.Frame) -> dict[str, Any]:
+        vars_map: dict[str, Any] = {}
+
+        fields = [
+            ("api_key", "API Key", False),
+            ("api_secret", "API Secret", True),
+        ]
+
+        for row, (key, label, secret) in enumerate(fields):
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
+            var = tk.StringVar()
+            widget = ttk.Entry(parent, textvariable=var, width=42, show="*" if secret else "")
+            widget.grid(row=row, column=1, sticky="ew", pady=4)
+            vars_map[key] = var
+
+        demo_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            parent,
+            text="Demo / testnet (ugyanaz, mint ProTrader-ben: testnet=true)",
+            variable=demo_var,
+        ).grid(row=len(fields), column=0, columnspan=2, sticky="w", pady=(8, 0))
+        vars_map["demo"] = demo_var
+
+        parent.columnconfigure(1, weight=1)
+        ttk.Label(
+            parent,
+            text="Tipp: ugyanazt a demo API kulcsot add meg, mint a ProTrader config.yaml-ban.",
+            foreground="#666666",
+        ).grid(row=len(fields) + 1, column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+        return vars_map
+
+    def _build_symbols_form(self, parent: ttk.Frame) -> None:
+        symbols_cfg = self._config.get("symbols", {})
+        self._symbol_pairs: list[dict[str, str]] = [
+            {
+                "name": str(pair.get("name", "")).strip(),
+                "mt5": str(pair.get("mt5", "")).strip(),
+                "binance": str(pair.get("binance", "")).strip().upper(),
+            }
+            for pair in symbols_cfg.get("pairs", [])
+            if pair.get("mt5") and pair.get("binance")
+        ]
+        self._selected_pair_index = int(symbols_cfg.get("selected_index") or 0)
+
+        ttk.Label(
+            parent,
+            text="MT5 és Binance Futures párok (pl. GOLD# ↔ PAXGUSDT).",
+            foreground="#555555",
+        ).pack(anchor="w", pady=(0, 8))
+
+        list_frame = ttk.Frame(parent)
+        list_frame.pack(fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        self._pairs_listbox = tk.Listbox(
+            list_frame,
+            height=8,
+            yscrollcommand=scrollbar.set,
+            exportselection=False,
+        )
+        self._pairs_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self._pairs_listbox.yview)
+        self._pairs_listbox.bind("<<ListboxSelect>>", self._on_pair_selected)
+
+        form = ttk.Frame(parent)
+        form.pack(fill="x", pady=(12, 0))
+        form.columnconfigure(1, weight=1)
+
+        self._sym_name = tk.StringVar()
+        self._sym_mt5 = tk.StringVar()
+        self._sym_binance = tk.StringVar()
+
+        fields = [
+            ("name", "Név (megjelenítés)", self._sym_name),
+            ("mt5", "MT5 szimbólum", self._sym_mt5),
+            ("binance", "Binance Futures", self._sym_binance),
+        ]
+        for row, (_, label, var) in enumerate(fields):
+            ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", pady=4)
+            ttk.Entry(form, textvariable=var, width=40).grid(row=row, column=1, sticky="ew", pady=4)
+
+        buttons = ttk.Frame(parent)
+        buttons.pack(fill="x", pady=(12, 0))
+        ttk.Button(buttons, text="Hozzáadás", command=self._add_symbol_pair).pack(side="left")
+        ttk.Button(buttons, text="Frissítés", command=self._update_symbol_pair).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(buttons, text="Törlés", command=self._delete_symbol_pair).pack(
+            side="left", padx=(8, 0)
+        )
+
+        refresh_row = ttk.Frame(parent)
+        refresh_row.pack(fill="x", pady=(16, 0))
+        ttk.Label(refresh_row, text="Árfolyam frissítés (ms):").pack(side="left")
+        self._refresh_ms = tk.StringVar(value="300")
+        ttk.Entry(refresh_row, textvariable=self._refresh_ms, width=8).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            parent,
+            text="Alapértelmezett: 300 ms. 100–5000 között. Alacsonyabb = gyorsabb, de több API hívás.",
+            foreground="#666666",
+        ).pack(anchor="w", pady=(6, 0))
+
+        self._refresh_pairs_listbox()
+
+    def _refresh_pairs_listbox(self) -> None:
+        self._pairs_listbox.delete(0, tk.END)
+        for index, pair in enumerate(self._symbol_pairs):
+            label = f"{pair['name']}  |  {pair['mt5']}  |  {pair['binance']}"
+            self._pairs_listbox.insert(tk.END, label)
+            if index == self._selected_pair_index:
+                self._pairs_listbox.selection_set(index)
+                self._pairs_listbox.activate(index)
+
+        if self._symbol_pairs and self._selected_pair_index < len(self._symbol_pairs):
+            self._fill_symbol_form(self._symbol_pairs[self._selected_pair_index])
+        else:
+            self._sym_name.set("")
+            self._sym_mt5.set("")
+            self._sym_binance.set("")
+
+    def _fill_symbol_form(self, pair: dict[str, str]) -> None:
+        self._sym_name.set(pair.get("name", ""))
+        self._sym_mt5.set(pair.get("mt5", ""))
+        self._sym_binance.set(pair.get("binance", ""))
+
+    def _on_pair_selected(self, _event: tk.Event | None = None) -> None:
+        selection = self._pairs_listbox.curselection()
+        if not selection:
+            return
+        self._selected_pair_index = selection[0]
+        self._fill_symbol_form(self._symbol_pairs[self._selected_pair_index])
+
+    def _read_symbol_form(self) -> dict[str, str] | None:
+        name = self._sym_name.get().strip()
+        mt5 = self._sym_mt5.get().strip()
+        binance = self._sym_binance.get().strip().upper()
+
+        if not mt5 or not binance:
+            messagebox.showerror("Hiba", "Az MT5 és Binance szimbólum megadása kötelező.")
+            return None
+
+        if not name:
+            name = f"{mt5} / {binance}"
+
+        return {"name": name, "mt5": mt5, "binance": binance}
+
+    def _add_symbol_pair(self) -> None:
+        pair = self._read_symbol_form()
+        if pair is None:
+            return
+
+        self._symbol_pairs.append(pair)
+        self._selected_pair_index = len(self._symbol_pairs) - 1
+        self._refresh_pairs_listbox()
+
+    def _update_symbol_pair(self) -> None:
+        if not self._symbol_pairs:
+            self._add_symbol_pair()
+            return
+
+        pair = self._read_symbol_form()
+        if pair is None:
+            return
+
+        index = self._selected_pair_index
+        if index < 0 or index >= len(self._symbol_pairs):
+            messagebox.showerror("Hiba", "Válassz ki egy szimbólum párt a listából.")
+            return
+
+        self._symbol_pairs[index] = pair
+        self._refresh_pairs_listbox()
+
+    def _delete_symbol_pair(self) -> None:
+        if not self._symbol_pairs:
+            return
+
+        index = self._selected_pair_index
+        if index < 0 or index >= len(self._symbol_pairs):
+            messagebox.showerror("Hiba", "Válassz ki egy szimbólum párt a törléshez.")
+            return
+
+        del self._symbol_pairs[index]
+        self._selected_pair_index = max(0, min(index, len(self._symbol_pairs) - 1))
+        self._refresh_pairs_listbox()
+
+    def _load_values(self) -> None:
+        mt5 = self._config.get("mt5", {})
+        self._mt5_vars["login"].set(str(mt5.get("login") or ""))
+        self._mt5_vars["password"].set(mt5.get("password", ""))
+        self._mt5_vars["server"].set(mt5.get("server", ""))
+        self._mt5_vars["terminal_path"].set(mt5.get("terminal_path", ""))
+
+        binance = self._config.get("binance", {})
+        self._binance_vars["api_key"].set(binance.get("api_key", ""))
+        self._binance_vars["api_secret"].set(binance.get("api_secret", ""))
+        self._binance_vars["demo"].set(bool(binance.get("demo", binance.get("testnet", True))))
+
+        ui = self._config.get("ui", {})
+        self._refresh_ms.set(str(ui.get("price_refresh_ms", 300)))
+
+    def _save(self) -> None:
+        login_raw = self._mt5_vars["login"].get().strip()
+        try:
+            login = int(login_raw) if login_raw else 0
+        except ValueError:
+            messagebox.showerror("Hiba", "Az MT5 login csak szám lehet.")
+            return
+
+        updated = deepcopy(self._config)
+        updated["mt5"] = {
+            "login": login,
+            "password": self._mt5_vars["password"].get(),
+            "server": self._mt5_vars["server"].get().strip(),
+            "terminal_path": self._mt5_vars["terminal_path"].get().strip(),
+        }
+        updated["binance"] = {
+            "api_key": self._binance_vars["api_key"].get().strip(),
+            "api_secret": self._binance_vars["api_secret"].get().strip(),
+            "demo": bool(self._binance_vars["demo"].get()),
+        }
+        updated["symbols"] = {
+            "pairs": self._symbol_pairs,
+            "selected_index": max(0, min(self._selected_pair_index, len(self._symbol_pairs) - 1))
+            if self._symbol_pairs
+            else 0,
+        }
+
+        try:
+            refresh_ms = int(self._refresh_ms.get().strip())
+        except ValueError:
+            messagebox.showerror("Hiba", "Az árfolyam frissítés csak szám lehet (ms).")
+            return
+        if refresh_ms < 100 or refresh_ms > 5000:
+            messagebox.showerror("Hiba", "Az árfolyam frissítés 100 és 5000 ms között lehet.")
+            return
+        updated["ui"] = {"price_refresh_ms": refresh_ms}
+
+        save_config(updated)
+        self._config = updated
+
+        if self._on_saved:
+            self._on_saved()
+
+        messagebox.showinfo("Mentve", "A csatlakozási beállítások elmentve.")
+        self.destroy()

@@ -1,0 +1,26 @@
+{
+  "mt5": {
+    "login": 0,
+    "password": "",
+    "server": "",
+    "terminal_path": ""
+  },
+  "binance": {
+    "api_key": "",
+    "api_secret": "",
+    "demo": true
+  },
+  "symbols": {
+    "pairs": [
+      {
+        "name": "Gold",
+        "mt5": "GOLD#",
+        "binance": "PAXGUSDT"
+      }
+    ],
+    "selected_index": 0
+  },
+  "ui": {
+    "price_refresh_ms": 300
+  }
+}

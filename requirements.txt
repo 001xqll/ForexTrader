@@ -1,0 +1,4 @@
+MetaTrader5>=5.0.45
+python-binance>=1.0.19
+pandas>=2.0.0
+matplotlib>=3.8.0
