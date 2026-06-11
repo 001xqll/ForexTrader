@@ -59,6 +59,11 @@ def log(message: str, level: int = logging.INFO) -> None:
     logging.getLogger(LOGGER_NAME).log(level, message)
 
 
+def flush_logs() -> None:
+    for handler in logging.getLogger(LOGGER_NAME).handlers:
+        handler.flush()
+
+
 def list_log_files() -> list[Path]:
     if not LOG_DIR.exists():
         return []

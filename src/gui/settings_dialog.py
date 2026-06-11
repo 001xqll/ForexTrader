@@ -6,6 +6,8 @@ from tkinter import messagebox, ttk
 from typing import Any, Callable
 
 from src.config.settings import load_config, save_config
+from src.config.settings import CONFIG_PATH
+from src.trading.market_hours import format_market_time, parse_market_time, validate_timezone
 
 
 class SettingsDialog(tk.Toplevel):
@@ -25,13 +27,16 @@ class SettingsDialog(tk.Toplevel):
         mt5_frame = ttk.Frame(notebook, padding=12)
         binance_frame = ttk.Frame(notebook, padding=12)
         symbols_frame = ttk.Frame(notebook, padding=12)
+        market_frame = ttk.Frame(notebook, padding=12)
         notebook.add(mt5_frame, text="MetaTrader 5")
         notebook.add(binance_frame, text="Binance Futures")
         notebook.add(symbols_frame, text="Szimbólumok")
+        notebook.add(market_frame, text="Piaci nyitvatartás")
 
         self._mt5_vars = self._build_mt5_form(mt5_frame)
         self._binance_vars = self._build_binance_form(binance_frame)
         self._build_symbols_form(symbols_frame)
+        self._market_vars = self._build_market_hours_form(market_frame)
 
         button_row = ttk.Frame(self)
         button_row.pack(fill="x", padx=12, pady=(0, 12))
@@ -183,6 +188,83 @@ class SettingsDialog(tk.Toplevel):
 
         self._refresh_pairs_listbox()
 
+    def _build_market_hours_form(self, parent: ttk.Frame) -> dict[str, Any]:
+        vars_map: dict[str, Any] = {}
+
+        enabled_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            parent,
+            text="Piaci nyitvatartás ellenőrzése (7/24 futáshoz)",
+            variable=enabled_var,
+        ).pack(anchor="w")
+        vars_map["enabled"] = enabled_var
+
+        form = ttk.Frame(parent)
+        form.pack(fill="x", pady=(12, 0))
+        form.columnconfigure(1, weight=1)
+
+        ttk.Label(form, text="Időzóna").grid(row=0, column=0, sticky="w", pady=4)
+        timezone_var = tk.StringVar(value="Europe/Budapest")
+        timezone_combo = ttk.Combobox(
+            form,
+            textvariable=timezone_var,
+            values=[
+                "Europe/Budapest",
+                "Europe/Kiev",
+                "Europe/London",
+                "Europe/Berlin",
+                "UTC",
+                "America/New_York",
+            ],
+            width=38,
+            state="readonly",
+        )
+        timezone_combo.grid(row=0, column=1, sticky="ew", pady=4)
+        vars_map["timezone"] = timezone_var
+        vars_map["timezone_widget"] = timezone_combo
+
+        ttk.Label(form, text="Nyitás (HH:MM:SS)").grid(row=1, column=0, sticky="w", pady=4)
+        open_var = tk.StringVar(value="01:02:00")
+        ttk.Entry(form, textvariable=open_var, width=12).grid(row=1, column=1, sticky="w", pady=4)
+        vars_map["open_time"] = open_var
+
+        ttk.Label(form, text="Zárás (HH:MM:SS)").grid(row=2, column=0, sticky="w", pady=4)
+        close_var = tk.StringVar(value="23:58:00")
+        ttk.Entry(form, textvariable=close_var, width=12).grid(row=2, column=1, sticky="w", pady=4)
+        vars_map["close_time"] = close_var
+
+        days_frame = ttk.LabelFrame(parent, text="Kereskedési napok", padding=8)
+        days_frame.pack(fill="x", pady=(12, 0))
+
+        day_defs = [
+            ("Hétfő", 0),
+            ("Kedd", 1),
+            ("Szerda", 2),
+            ("Csütörtök", 3),
+            ("Péntek", 4),
+            ("Szombat", 5),
+            ("Vasárnap", 6),
+        ]
+        vars_map["trading_days"] = {}
+        for index, (label, day_id) in enumerate(day_defs):
+            day_var = tk.BooleanVar(value=day_id < 5)
+            ttk.Checkbutton(days_frame, text=label, variable=day_var).grid(
+                row=index // 4,
+                column=index % 4,
+                sticky="w",
+                padx=(0, 12),
+                pady=2,
+            )
+            vars_map["trading_days"][day_id] = day_var
+
+        ttk.Label(
+            parent,
+            text="Zárva tartás idején a program fut, de kereskedés nem engedélyezett.",
+            foreground="#666666",
+        ).pack(anchor="w", pady=(12, 0))
+
+        return vars_map
+
     def _refresh_pairs_listbox(self) -> None:
         self._pairs_listbox.delete(0, tk.END)
         for index, pair in enumerate(self._symbol_pairs):
@@ -279,6 +361,15 @@ class SettingsDialog(tk.Toplevel):
         ui = self._config.get("ui", {})
         self._refresh_ms.set(str(ui.get("price_refresh_ms", 300)))
 
+        market = self._config.get("market_hours", {})
+        self._market_vars["enabled"].set(bool(market.get("enabled", True)))
+        self._market_vars["timezone"].set(market.get("timezone", "Europe/Budapest"))
+        self._market_vars["open_time"].set(market.get("open_time", "01:02:00"))
+        self._market_vars["close_time"].set(market.get("close_time", "23:58:00"))
+        trading_days = set(market.get("trading_days", [0, 1, 2, 3, 4]))
+        for day_id, day_var in self._market_vars["trading_days"].items():
+            day_var.set(day_id in trading_days)
+
     def _save(self) -> None:
         login_raw = self._mt5_vars["login"].get().strip()
         try:
@@ -316,11 +407,39 @@ class SettingsDialog(tk.Toplevel):
             return
         updated["ui"] = {"price_refresh_ms": refresh_ms}
 
+        try:
+            timezone = validate_timezone(self._market_vars["timezone_widget"].get())
+            open_time = parse_market_time(self._market_vars["open_time"].get())
+            close_time = parse_market_time(self._market_vars["close_time"].get())
+        except ValueError as exc:
+            messagebox.showerror("Hiba", str(exc))
+            return
+
+        trading_days = [
+            day_id
+            for day_id, day_var in self._market_vars["trading_days"].items()
+            if day_var.get()
+        ]
+        if self._market_vars["enabled"].get() and not trading_days:
+            messagebox.showerror("Hiba", "Legalább egy kereskedési napot válassz ki.")
+            return
+
+        updated["market_hours"] = {
+            "enabled": bool(self._market_vars["enabled"].get()),
+            "timezone": timezone,
+            "open_time": format_market_time(open_time),
+            "close_time": format_market_time(close_time),
+            "trading_days": sorted(trading_days),
+        }
+
         save_config(updated)
         self._config = updated
 
         if self._on_saved:
             self._on_saved()
 
-        messagebox.showinfo("Mentve", "A csatlakozási beállítások elmentve.")
+        messagebox.showinfo(
+            "Mentve",
+            f"A beállítások elmentve.\n\nFájl: {CONFIG_PATH}",
+        )
         self.destroy()

@@ -18,15 +18,20 @@ from src.data.diff_history import build_diff_dataframe
 from src.gui.diff_chart_panel import DiffChartPanel
 from src.gui.log_viewer_dialog import LogViewerDialog
 from src.gui.settings_dialog import SettingsDialog
+from src.logger.app_logger import flush_logs
 from src.logger.app_logger import log as app_log
 from src.logger.app_logger import read_recent_log_lines, setup_logger
+from src.trading.market_hours import format_market_schedule, is_market_open
 
 
 class TradingApp(tk.Tk):
+    MARKET_CHECK_SEC = 30
+
     def __init__(self) -> None:
         super().__init__()
         self.title("ForexTrader")
         self.minsize(780, 640)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._mt5 = MT5Client()
         self._binance = BinanceFuturesClient()
@@ -34,11 +39,15 @@ class TradingApp(tk.Tk):
         self._price_job: str | None = None
         self._price_fetching = False
         self._symbol_var = tk.StringVar()
+        self._last_market_open: bool | None = None
+        self._market_job: str | None = None
 
         self._build_ui()
         self._init_logging()
         self._reload_symbol_selector()
         self._refresh_status_labels()
+        self._check_market_status(force_log=True)
+        self._start_market_watch()
 
     def _build_ui(self) -> None:
         header = ttk.Frame(self, padding=12)
@@ -56,8 +65,10 @@ class TradingApp(tk.Tk):
 
         self._mt5_status = ttk.Label(status_frame, text="MT5: nincs csatlakozva")
         self._binance_status = ttk.Label(status_frame, text="Binance: nincs csatlakozva")
+        self._market_status = ttk.Label(status_frame, text="Kereskedés: —")
         self._mt5_status.pack(anchor="w", pady=2)
         self._binance_status.pack(anchor="w", pady=2)
+        self._market_status.pack(anchor="w", pady=2)
 
         buttons = ttk.Frame(self, padding=(12, 0, 12, 8))
         buttons.pack(fill="x")
@@ -182,6 +193,59 @@ class TradingApp(tk.Tk):
         )
         self._mt5_status.configure(text=mt5_text)
         self._binance_status.configure(text=binance_text)
+        self._update_market_status_label()
+
+    @property
+    def is_trading_allowed(self) -> bool:
+        return is_market_open(load_config())
+
+    def _update_market_status_label(self) -> None:
+        config = load_config()
+        market_cfg = config.get("market_hours", {})
+        if not market_cfg.get("enabled", True):
+            self._market_status.configure(text="Kereskedés: nincs időkorlát (ellenőrzés kikapcsolva)")
+            return
+
+        if self.is_trading_allowed:
+            self._market_status.configure(text="Kereskedés: engedélyezve (piac nyitva)")
+        else:
+            self._market_status.configure(text="Kereskedés: várakozás piacnyitásra")
+
+    def _start_market_watch(self) -> None:
+        self._stop_market_watch()
+        self._schedule_market_watch()
+
+    def _stop_market_watch(self) -> None:
+        if self._market_job is not None:
+            self.after_cancel(self._market_job)
+            self._market_job = None
+
+    def _schedule_market_watch(self) -> None:
+        self._market_job = self.after(self.MARKET_CHECK_SEC * 1000, self._on_market_watch_tick)
+
+    def _on_market_watch_tick(self) -> None:
+        self._check_market_status()
+        self._schedule_market_watch()
+
+    def _check_market_status(self, force_log: bool = False) -> None:
+        config = load_config()
+        market_cfg = config.get("market_hours", {})
+
+        if not market_cfg.get("enabled", True):
+            self._last_market_open = True
+            self._update_market_status_label()
+            return
+
+        is_open = self.is_trading_allowed
+        if force_log or self._last_market_open is None or is_open != self._last_market_open:
+            schedule = format_market_schedule(config)
+            if is_open:
+                self._log(f"Kereskedés engedélyezve — piac nyitva. ({schedule})")
+            else:
+                self._log(f"Várakozás piacnyitásra — a piac jelenleg zárva. ({schedule})")
+            self._last_market_open = is_open
+
+        self._update_market_status_label()
 
     def _reload_symbol_selector(self) -> None:
         config = load_config()
@@ -339,8 +403,12 @@ class TradingApp(tk.Tk):
         SettingsDialog(self, on_saved=self._on_settings_saved)
 
     def _on_settings_saved(self) -> None:
-        self._log("Beállítások frissítve.")
+        market = load_config().get("market_hours", {})
+        timezone = market.get("timezone", "—")
+        self._log(f"Beállítások frissítve. Időzóna: {timezone}")
         self._reload_symbol_selector()
+        self._last_market_open = None
+        self._check_market_status(force_log=True)
         if self._mt5.is_connected or self._binance.is_connected:
             self._stop_price_refresh()
             self._load_history_if_needed(force=True)
@@ -366,6 +434,7 @@ class TradingApp(tk.Tk):
 
                 if mt5_result.success or binance_result.success:
                     self._show_account_info(show_errors=False)
+                    self._check_market_status(force_log=True)
                     self._start_price_refresh()
                 else:
                     self._chart.clear()
@@ -382,6 +451,15 @@ class TradingApp(tk.Tk):
         self._set_account_text("")
         self._chart.clear()
         self._log("Kapcsolatok bontva.")
+
+    def _on_close(self) -> None:
+        self._log("ForexTrader leállítva — kilépés a programból.")
+        self._stop_price_refresh()
+        self._stop_market_watch()
+        self._mt5.disconnect()
+        self._binance.disconnect()
+        flush_logs()
+        self.destroy()
 
     def _show_account_info(self, show_errors: bool = True) -> None:
         if not self._mt5.is_connected and not self._binance.is_connected:

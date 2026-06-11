@@ -26,6 +26,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ui": {
         "price_refresh_ms": 300,
     },
+    "market_hours": {
+        "enabled": True,
+        "timezone": "Europe/Budapest",
+        "open_time": "01:02:00",
+        "close_time": "23:58:00",
+        "trading_days": [0, 1, 2, 3, 4],
+    },
 }
 
 
