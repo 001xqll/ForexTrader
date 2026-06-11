@@ -8,7 +8,6 @@ from typing import Any
 class MT5ConnectionResult:
     success: bool
     message: str
-    account: dict[str, Any] | None = None
 
 
 class MT5Client:
@@ -64,11 +63,9 @@ class MT5Client:
             )
 
         self._connected = True
-        account = self.get_account_info()
         return MT5ConnectionResult(
             success=True,
             message="MT5 csatlakozás sikeres.",
-            account=account,
         )
 
     def disconnect(self) -> None:
@@ -81,30 +78,6 @@ class MT5Client:
             mt5.shutdown()
         finally:
             self._connected = False
-
-    def get_account_info(self) -> dict[str, Any] | None:
-        if not self._connected:
-            return None
-
-        import MetaTrader5 as mt5
-
-        info = mt5.account_info()
-        if info is None:
-            return None
-
-        return {
-            "login": info.login,
-            "name": info.name,
-            "server": info.server,
-            "currency": info.currency,
-            "balance": info.balance,
-            "equity": info.equity,
-            "margin": info.margin,
-            "free_margin": info.margin_free,
-            "margin_level": info.margin_level,
-            "leverage": info.leverage,
-            "profit": info.profit,
-        }
 
     def get_tick(self, symbol: str) -> dict[str, Any] | None:
         if not self._connected or not symbol:

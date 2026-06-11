@@ -9,14 +9,12 @@ from typing import Any
 class BinanceConnectionResult:
     success: bool
     message: str
-    account: dict[str, Any] | None = None
 
 
 class BinanceFuturesClient:
     def __init__(self) -> None:
         self._client = None
         self._connected = False
-        self._demo = True
 
     @property
     def is_connected(self) -> bool:
@@ -44,12 +42,10 @@ class BinanceFuturesClient:
         self.disconnect()
 
         try:
-            # Ugyanaz a módszer, mint a ProTrader-ben: python-binance + testnet flag.
-            client = Client(api_key, api_secret, testnet=use_demo)
+            client = self._create_client(api_key, api_secret, use_demo)
             client.timestamp_offset = 0
             server_time = client.get_server_time()
             client.timestamp_offset = server_time["serverTime"] - int(time.time() * 1000)
-            balances = client.futures_account_balance()
         except Exception as exc:  # noqa: BLE001 - show broker error in UI
             self._client = None
             self._connected = False
@@ -60,62 +56,23 @@ class BinanceFuturesClient:
 
         self._client = client
         self._connected = True
-        self._demo = use_demo
 
-        account = self._format_balance(balances)
         mode = "Demo" if use_demo else "Éles"
         return BinanceConnectionResult(
             success=True,
             message=f"Binance Futures csatlakozás sikeres ({mode}).",
-            account=account,
         )
 
     def disconnect(self) -> None:
         self._client = None
         self._connected = False
 
-    def get_account_info(self) -> dict[str, Any] | None:
-        if not self._connected or self._client is None:
-            return None
+    def _create_client(self, api_key: str, api_secret: str, use_demo: bool):
+        from binance.client import Client
 
-        try:
-            balances = self._client.futures_account_balance()
-        except Exception:
-            return None
-
-        return self._format_balance(balances)
-
-    def _format_balance(self, balances: list[dict[str, Any]]) -> dict[str, Any]:
-        assets: dict[str, dict[str, float]] = {}
-        usdt_total = 0.0
-        usdt_free = 0.0
-        usdt_used = 0.0
-
-        for entry in balances:
-            asset = entry.get("asset", "")
-            balance = float(entry.get("balance") or 0)
-            available = float(entry.get("availableBalance") or 0)
-            if balance == 0 and available == 0:
-                continue
-
-            assets[asset] = {
-                "total": balance,
-                "free": available,
-                "used": max(balance - available, 0.0),
-            }
-
-            if asset == "USDT":
-                usdt_total = balance
-                usdt_free = available
-                usdt_used = max(balance - available, 0.0)
-
-        return {
-            "mode": "Demo" if self._demo else "Éles",
-            "usdt_total": usdt_total,
-            "usdt_free": usdt_free,
-            "usdt_used": usdt_used,
-            "assets": assets,
-        }
+        if use_demo:
+            return Client(api_key, api_secret, demo=True)
+        return Client(api_key, api_secret)
 
     def get_ticker(self, symbol: str) -> dict[str, Any] | None:
         if not self._connected or self._client is None or not symbol:

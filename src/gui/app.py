@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import scrolledtext, ttk
 
 from src.brokers.binance_client import BinanceFuturesClient
 from src.brokers.mt5_client import MT5Client
@@ -56,7 +56,7 @@ class TradingApp(tk.Tk):
         ttk.Label(header, text="ForexTrader", font=("Segoe UI", 16, "bold")).pack(anchor="w")
         ttk.Label(
             header,
-            text="MT5 és Binance Futures — különbségi D1 grafikon és számla információk.",
+            text="MT5 és Binance Futures — különbségi D1 grafikon.",
             foreground="#555555",
         ).pack(anchor="w", pady=(4, 0))
 
@@ -79,11 +79,6 @@ class TradingApp(tk.Tk):
             command=self._open_settings,
         )
         self._connect_btn = ttk.Button(buttons, text="Connect", command=self._connect)
-        self._account_btn = ttk.Button(
-            buttons,
-            text="Account Info",
-            command=self._show_account_info,
-        )
         self._disconnect_btn = ttk.Button(
             buttons,
             text="Disconnect",
@@ -92,7 +87,6 @@ class TradingApp(tk.Tk):
 
         self._settings_btn.pack(side="left")
         self._connect_btn.pack(side="left", padx=(8, 0))
-        self._account_btn.pack(side="left", padx=(8, 0))
         self._disconnect_btn.pack(side="left", padx=(8, 0))
 
         chart_frame = ttk.LabelFrame(self, text="Különbségi árfolyam (30 nap, D1)", padding=8)
@@ -112,18 +106,6 @@ class TradingApp(tk.Tk):
 
         self._chart = DiffChartPanel(chart_frame)
         self._chart.pack(fill="both", expand=True)
-
-        info_frame = ttk.LabelFrame(self, text="Számla információ", padding=12)
-        info_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-
-        self._account_text = scrolledtext.ScrolledText(
-            info_frame,
-            height=8,
-            wrap="word",
-            font=("Consolas", 10),
-        )
-        self._account_text.pack(fill="both", expand=True)
-        self._account_text.configure(state="disabled")
 
         log_frame = ttk.LabelFrame(self, text="Napló", padding=12)
         log_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
@@ -148,7 +130,6 @@ class TradingApp(tk.Tk):
         self._busy = busy
         state = "disabled" if busy else "normal"
         self._connect_btn.configure(state=state)
-        self._account_btn.configure(state=state)
         self._disconnect_btn.configure(state=state)
 
     def _init_logging(self) -> None:
@@ -179,12 +160,6 @@ class TradingApp(tk.Tk):
 
     def _log(self, message: str) -> None:
         app_log(message)
-
-    def _set_account_text(self, content: str) -> None:
-        self._account_text.configure(state="normal")
-        self._account_text.delete("1.0", "end")
-        self._account_text.insert("1.0", content)
-        self._account_text.configure(state="disabled")
 
     def _refresh_status_labels(self) -> None:
         mt5_text = "MT5: csatlakozva" if self._mt5.is_connected else "MT5: nincs csatlakozva"
@@ -433,7 +408,6 @@ class TradingApp(tk.Tk):
                 self._set_busy(False)
 
                 if mt5_result.success or binance_result.success:
-                    self._show_account_info(show_errors=False)
                     self._check_market_status(force_log=True)
                     self._start_price_refresh()
                 else:
@@ -448,7 +422,6 @@ class TradingApp(tk.Tk):
         self._mt5.disconnect()
         self._binance.disconnect()
         self._refresh_status_labels()
-        self._set_account_text("")
         self._chart.clear()
         self._log("Kapcsolatok bontva.")
 
@@ -460,69 +433,3 @@ class TradingApp(tk.Tk):
         self._binance.disconnect()
         flush_logs()
         self.destroy()
-
-    def _show_account_info(self, show_errors: bool = True) -> None:
-        if not self._mt5.is_connected and not self._binance.is_connected:
-            if show_errors:
-                messagebox.showwarning(
-                    "Nincs csatlakozás",
-                    "Először csatlakozz a Connect gombbal, vagy állítsd be a Beállításokat.",
-                )
-            return
-
-        lines: list[str] = []
-
-        if self._mt5.is_connected:
-            account = self._mt5.get_account_info()
-            if account:
-                lines.extend(
-                    [
-                        "=== MetaTrader 5 ===",
-                        f"Login:      {account['login']}",
-                        f"Név:        {account['name']}",
-                        f"Szerver:    {account['server']}",
-                        f"Pénznem:    {account['currency']}",
-                        f"Egyenleg:   {account['balance']:.2f}",
-                        f"Tőke:       {account['equity']:.2f}",
-                        f"Margin:     {account['margin']:.2f}",
-                        f"Szabad:     {account['free_margin']:.2f}",
-                        f"Margin %:   {account['margin_level']:.2f}",
-                        f"Tőkeáttét:  1:{account['leverage']}",
-                        f"Profit:     {account['profit']:.2f}",
-                        "",
-                    ]
-                )
-            else:
-                lines.extend(["=== MetaTrader 5 ===", "Nem sikerült lekérni a számla adatokat.", ""])
-
-        if self._binance.is_connected:
-            account = self._binance.get_account_info()
-            if account:
-                lines.extend(
-                    [
-                        "=== Binance Futures ===",
-                        f"Mód:        {account['mode']}",
-                        f"USDT össz:  {account['usdt_total']:.4f}",
-                        f"USDT szabad:{account['usdt_free']:.4f}",
-                        f"USDT haszn.:{account['usdt_used']:.4f}",
-                        "",
-                        "Eszközök:",
-                    ]
-                )
-                assets = account.get("assets") or {}
-                if assets:
-                    for asset, values in sorted(assets.items()):
-                        lines.append(
-                            f"  {asset}: total={values['total']:.6f}, "
-                            f"free={values['free']:.6f}, used={values['used']:.6f}"
-                        )
-                else:
-                    lines.append("  (nincs nem nulla egyenleg)")
-                lines.append("")
-            else:
-                lines.extend(
-                    ["=== Binance Futures ===", "Nem sikerült lekérni a számla adatokat.", ""]
-                )
-
-        self._set_account_text("\n".join(lines).strip())
-        self._log("Számla információ frissítve.")
