@@ -104,12 +104,20 @@ class SettingsDialog(tk.Toplevel):
         ).grid(row=len(fields), column=0, columnspan=2, sticky="w", pady=(8, 0))
         vars_map["demo"] = demo_var
 
+        ws_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            parent,
+            text="Websocket árfolyam (bookTicker, ajánlott — gyorsabb mint REST)",
+            variable=ws_var,
+        ).grid(row=len(fields) + 1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        vars_map["use_websocket"] = ws_var
+
         parent.columnconfigure(1, weight=1)
         ttk.Label(
             parent,
             text="Tipp: ugyanazt a demo API kulcsot add meg, mint a ProTrader config.yaml-ban.",
             foreground="#666666",
-        ).grid(row=len(fields) + 1, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ).grid(row=len(fields) + 2, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         return vars_map
 
@@ -177,12 +185,19 @@ class SettingsDialog(tk.Toplevel):
 
         refresh_row = ttk.Frame(parent)
         refresh_row.pack(fill="x", pady=(16, 0))
-        ttk.Label(refresh_row, text="Árfolyam frissítés (ms):").pack(side="left")
+        ttk.Label(refresh_row, text="Tick frissítés (ms):").pack(side="left")
         self._refresh_ms = tk.StringVar(value="300")
         ttk.Entry(refresh_row, textvariable=self._refresh_ms, width=8).pack(side="left", padx=(8, 0))
+
+        chart_row = ttk.Frame(parent)
+        chart_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(chart_row, text="Grafikon frissítés (ms):").pack(side="left")
+        self._chart_refresh_ms = tk.StringVar(value="1000")
+        ttk.Entry(chart_row, textvariable=self._chart_refresh_ms, width=8).pack(side="left", padx=(8, 0))
+
         ttk.Label(
             parent,
-            text="Alapértelmezett: 300 ms. 100–5000 között. Alacsonyabb = gyorsabb, de több API hívás.",
+            text="Tick: kereskedési motor (100–5000 ms). Grafikon: csak megjelenítés (200–5000 ms, alap 1000).",
             foreground="#666666",
         ).pack(anchor="w", pady=(6, 0))
 
@@ -357,9 +372,11 @@ class SettingsDialog(tk.Toplevel):
         self._binance_vars["api_key"].set(binance.get("api_key", ""))
         self._binance_vars["api_secret"].set(binance.get("api_secret", ""))
         self._binance_vars["demo"].set(bool(binance.get("demo", binance.get("testnet", True))))
+        self._binance_vars["use_websocket"].set(bool(binance.get("use_websocket", True)))
 
         ui = self._config.get("ui", {})
         self._refresh_ms.set(str(ui.get("price_refresh_ms", 300)))
+        self._chart_refresh_ms.set(str(ui.get("chart_refresh_ms", 1000)))
 
         market = self._config.get("market_hours", {})
         self._market_vars["enabled"].set(bool(market.get("enabled", True)))
@@ -389,6 +406,7 @@ class SettingsDialog(tk.Toplevel):
             "api_key": self._binance_vars["api_key"].get().strip(),
             "api_secret": self._binance_vars["api_secret"].get().strip(),
             "demo": bool(self._binance_vars["demo"].get()),
+            "use_websocket": bool(self._binance_vars["use_websocket"].get()),
         }
         updated["symbols"] = {
             "pairs": self._symbol_pairs,
@@ -399,13 +417,20 @@ class SettingsDialog(tk.Toplevel):
 
         try:
             refresh_ms = int(self._refresh_ms.get().strip())
+            chart_refresh_ms = int(self._chart_refresh_ms.get().strip())
         except ValueError:
-            messagebox.showerror("Hiba", "Az árfolyam frissítés csak szám lehet (ms).")
+            messagebox.showerror("Hiba", "A frissítési idők csak számok lehetnek (ms).")
             return
         if refresh_ms < 100 or refresh_ms > 5000:
-            messagebox.showerror("Hiba", "Az árfolyam frissítés 100 és 5000 ms között lehet.")
+            messagebox.showerror("Hiba", "A tick frissítés 100 és 5000 ms között lehet.")
             return
-        updated["ui"] = {"price_refresh_ms": refresh_ms}
+        if chart_refresh_ms < 200 or chart_refresh_ms > 5000:
+            messagebox.showerror("Hiba", "A grafikon frissítés 200 és 5000 ms között lehet.")
+            return
+        updated["ui"] = {
+            "price_refresh_ms": refresh_ms,
+            "chart_refresh_ms": chart_refresh_ms,
+        }
 
         try:
             timezone = validate_timezone(self._market_vars["timezone_widget"].get())

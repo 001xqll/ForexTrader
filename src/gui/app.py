@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
-from concurrent.futures import ThreadPoolExecutor
 from tkinter import scrolledtext, ttk
 
 from src.brokers.binance_client import BinanceFuturesClient
 from src.brokers.mt5_client import MT5Client
 from src.config.settings import (
+    get_chart_refresh_ms,
     get_price_refresh_ms,
     get_selected_symbol,
     get_symbol_pairs,
@@ -22,6 +22,8 @@ from src.logger.app_logger import flush_logs
 from src.logger.app_logger import log as app_log
 from src.logger.app_logger import read_recent_log_lines, setup_logger
 from src.trading.market_hours import format_market_schedule, is_market_open
+from src.trading.runtime import TradingRuntime
+from src.trading.tick_snapshot import TickSnapshot
 
 
 class TradingApp(tk.Tk):
@@ -35,12 +37,19 @@ class TradingApp(tk.Tk):
 
         self._mt5 = MT5Client()
         self._binance = BinanceFuturesClient()
+        self._runtime = TradingRuntime(
+            self._mt5,
+            self._binance,
+            log=self._log,
+            is_trading_allowed=lambda: self.is_trading_allowed,
+        )
+        self._runtime.subscribe_ticks(self._on_tick_snapshot)
+
         self._busy = False
-        self._price_job: str | None = None
-        self._price_fetching = False
         self._symbol_var = tk.StringVar()
         self._last_market_open: bool | None = None
         self._market_job: str | None = None
+        self._runtime_active = False
 
         self._build_ui()
         self._init_logging()
@@ -56,7 +65,7 @@ class TradingApp(tk.Tk):
         ttk.Label(header, text="ForexTrader", font=("Segoe UI", 16, "bold")).pack(anchor="w")
         ttk.Label(
             header,
-            text="MT5 és Binance Futures — különbségi D1 grafikon.",
+            text="MT5 és Binance Futures — tick motor + különbségi D1 grafikon.",
             foreground="#555555",
         ).pack(anchor="w", pady=(4, 0))
 
@@ -250,7 +259,10 @@ class TradingApp(tk.Tk):
         config.setdefault("symbols", {})["selected_index"] = index
         save_config(config)
         self._load_history_if_needed(force=True)
-        self._refresh_prices_now()
+        if self._runtime_active:
+            symbol = self._get_current_symbol()
+            if symbol:
+                self._runtime.update_symbol(symbol)
 
     def _get_current_symbol(self) -> dict[str, str] | None:
         return get_selected_symbol(load_config())
@@ -295,84 +307,34 @@ class TradingApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _update_live_view(
-        self,
-        mt5_tick: dict | None,
-        binance_tick: dict | None,
-    ) -> None:
-        mt5_bid = mt5_tick.get("bid") if mt5_tick else None
-        binance_price = binance_tick.get("price") if binance_tick else None
+    def _on_tick_snapshot(self, snapshot: TickSnapshot) -> None:
+        self.after(0, lambda snap=snapshot: self._update_chart_from_snapshot(snap))
 
-        current_diff = None
-        if mt5_bid is not None and binance_price is not None:
-            current_diff = mt5_bid - binance_price
+    def _update_chart_from_snapshot(self, snapshot: TickSnapshot) -> None:
+        if not snapshot.is_complete:
+            return
 
-        refresh_ms = get_price_refresh_ms(load_config())
-        self._chart.update_live(current_diff, mt5_bid, binance_price, refresh_ms)
+        self._chart.update_live(
+            snapshot.diff,
+            snapshot.mt5_bid,
+            snapshot.binance_price,
+            chart_refresh_ms=get_chart_refresh_ms(load_config()),
+            tick_refresh_ms=get_price_refresh_ms(load_config()),
+            tick_source=snapshot.source,
+        )
 
-    def _start_price_refresh(self) -> None:
-        self._stop_price_refresh()
-        self._load_history_if_needed(force=True)
-        self._refresh_prices_now()
-
-    def _stop_price_refresh(self) -> None:
-        if self._price_job is not None:
-            self.after_cancel(self._price_job)
-            self._price_job = None
-
-    def _schedule_price_refresh(self) -> None:
-        refresh_ms = get_price_refresh_ms(load_config())
-        self._price_job = self.after(refresh_ms, self._refresh_prices_now)
-
-    def _refresh_prices_now(self) -> None:
+    def _start_runtime(self) -> None:
         symbol = self._get_current_symbol()
         if symbol is None:
-            self._chart.clear()
             return
+        self._load_history_if_needed(force=True)
+        self._runtime.start(symbol)
+        self._runtime_active = True
 
-        if not self._mt5.is_connected and not self._binance.is_connected:
-            return
-
-        self._load_history_if_needed()
-
-        if self._price_fetching:
-            self._schedule_price_refresh()
-            return
-
-        self._price_fetching = True
-
-        def worker() -> None:
-            mt5_tick = None
-            binance_tick = None
-
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                futures = []
-                if self._mt5.is_connected:
-                    futures.append(("mt5", pool.submit(self._mt5.get_tick, symbol["mt5"])))
-                if self._binance.is_connected:
-                    futures.append(
-                        ("binance", pool.submit(self._binance.get_ticker, symbol["binance"]))
-                    )
-
-                for name, future in futures:
-                    try:
-                        result = future.result()
-                        if name == "mt5":
-                            mt5_tick = result
-                        else:
-                            binance_tick = result
-                    except Exception:
-                        pass
-
-            def finish() -> None:
-                self._price_fetching = False
-                self._update_live_view(mt5_tick, binance_tick)
-                if self._mt5.is_connected or self._binance.is_connected:
-                    self._schedule_price_refresh()
-
-            self.after(0, finish)
-
-        threading.Thread(target=worker, daemon=True).start()
+    def _stop_runtime(self) -> None:
+        if self._runtime_active:
+            self._runtime.stop()
+            self._runtime_active = False
 
     def _open_settings(self) -> None:
         SettingsDialog(self, on_saved=self._on_settings_saved)
@@ -384,10 +346,11 @@ class TradingApp(tk.Tk):
         self._reload_symbol_selector()
         self._last_market_open = None
         self._check_market_status(force_log=True)
-        if self._mt5.is_connected or self._binance.is_connected:
-            self._stop_price_refresh()
+        if self._runtime_active:
+            self._stop_runtime()
+            self._start_runtime()
+        elif self._mt5.is_connected or self._binance.is_connected:
             self._load_history_if_needed(force=True)
-            self._refresh_prices_now()
 
     def _connect(self) -> None:
         if self._busy:
@@ -409,7 +372,7 @@ class TradingApp(tk.Tk):
 
                 if mt5_result.success or binance_result.success:
                     self._check_market_status(force_log=True)
-                    self._start_price_refresh()
+                    self._start_runtime()
                 else:
                     self._chart.clear()
 
@@ -418,7 +381,7 @@ class TradingApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _disconnect(self) -> None:
-        self._stop_price_refresh()
+        self._stop_runtime()
         self._mt5.disconnect()
         self._binance.disconnect()
         self._refresh_status_labels()
@@ -427,9 +390,10 @@ class TradingApp(tk.Tk):
 
     def _on_close(self) -> None:
         self._log("ForexTrader leállítva — kilépés a programból.")
-        self._stop_price_refresh()
+        self._stop_runtime()
         self._stop_market_watch()
         self._mt5.disconnect()
         self._binance.disconnect()
+        self._runtime.shutdown()
         flush_logs()
         self.destroy()

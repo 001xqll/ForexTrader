@@ -15,6 +15,8 @@ class BinanceFuturesClient:
     def __init__(self) -> None:
         self._client = None
         self._connected = False
+        self._use_demo = True
+        self._use_websocket = True
 
     @property
     def is_connected(self) -> bool:
@@ -56,6 +58,8 @@ class BinanceFuturesClient:
 
         self._client = client
         self._connected = True
+        self._use_demo = use_demo
+        self._use_websocket = bool(settings.get("use_websocket", True))
 
         mode = "Demo" if use_demo else "Éles"
         return BinanceConnectionResult(
@@ -66,6 +70,14 @@ class BinanceFuturesClient:
     def disconnect(self) -> None:
         self._client = None
         self._connected = False
+
+    @property
+    def use_demo(self) -> bool:
+        return self._use_demo
+
+    @property
+    def use_websocket(self) -> bool:
+        return self._use_websocket
 
     def _create_client(self, api_key: str, api_secret: str, use_demo: bool):
         from binance.client import Client
@@ -89,6 +101,7 @@ class BinanceFuturesClient:
             "price": price,
             "bid": price,
             "ask": price,
+            "source": "rest",
         }
 
     def get_daily_klines(self, symbol: str, limit: int = 30) -> list[list[Any]] | None:

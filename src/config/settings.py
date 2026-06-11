@@ -16,6 +16,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "api_key": "",
         "api_secret": "",
         "demo": True,
+        "use_websocket": True,
     },
     "symbols": {
         "pairs": [
@@ -25,6 +26,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "ui": {
         "price_refresh_ms": 300,
+        "chart_refresh_ms": 1000,
     },
     "market_hours": {
         "enabled": True,
@@ -40,6 +42,12 @@ def get_price_refresh_ms(config: dict[str, Any] | None = None) -> int:
     cfg = config or load_config()
     value = int(cfg.get("ui", {}).get("price_refresh_ms", 300))
     return max(100, min(value, 5000))
+
+
+def get_chart_refresh_ms(config: dict[str, Any] | None = None) -> int:
+    cfg = config or load_config()
+    value = int(cfg.get("ui", {}).get("chart_refresh_ms", 1000))
+    return max(200, min(value, 5000))
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.json"
 

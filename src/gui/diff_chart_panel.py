@@ -12,7 +12,6 @@ from matplotlib.patches import Rectangle
 
 class DiffChartPanel(ttk.Frame):
     HIST_REFRESH_SEC = 3600
-    LIVE_REDRAW_MIN_SEC = 1.0
 
     def __init__(self, master: tk.Misc) -> None:
         super().__init__(master)
@@ -83,13 +82,16 @@ class DiffChartPanel(ttk.Frame):
         current_diff: float | None,
         mt5_bid: float | None,
         binance_price: float | None,
-        refresh_ms: int,
+        chart_refresh_ms: int,
+        tick_refresh_ms: int | None = None,
+        tick_source: str | None = None,
     ) -> None:
         if self._df_cache is None or current_diff is None:
             return
 
+        min_interval_sec = max(0.2, chart_refresh_ms / 1000.0)
         now = time.time()
-        if now - self._last_live_draw < self.LIVE_REDRAW_MIN_SEC:
+        if now - self._last_live_draw < min_interval_sec:
             return
         self._last_live_draw = now
 
@@ -101,10 +103,17 @@ class DiffChartPanel(ttk.Frame):
 
         mt5_text = f"{mt5_bid:.2f}" if mt5_bid is not None else "—"
         bin_text = f"{binance_price:.2f}" if binance_price is not None else "—"
+        tick_ms = tick_refresh_ms if tick_refresh_ms is not None else chart_refresh_ms
+        if tick_source == "binance_ws":
+            binance_mode = "WS"
+        elif tick_source == "rest_poll":
+            binance_mode = "REST"
+        else:
+            binance_mode = "—"
         self._ax.set_title(
             f"{self._title_symbol}  ·  D1 különbség (30 nap)\n"
-            f"Élő: {current_diff:+.2f}   MT5: {mt5_text}   Binance: {bin_text}   "
-            f"(frissítés ~{refresh_ms} ms)",
+            f"Élő: {current_diff:+.2f}   MT5: {mt5_text}   Binance: {bin_text} ({binance_mode})   "
+            f"(tick ~{tick_ms} ms, grafikon ~{chart_refresh_ms} ms)",
             fontsize=10,
         )
         self._canvas.draw_idle()

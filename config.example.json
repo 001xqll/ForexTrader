@@ -8,7 +8,8 @@
   "binance": {
     "api_key": "",
     "api_secret": "",
-    "demo": true
+    "demo": true,
+    "use_websocket": true
   },
   "symbols": {
     "pairs": [
@@ -21,7 +22,8 @@
     "selected_index": 0
   },
   "ui": {
-    "price_refresh_ms": 300
+    "price_refresh_ms": 300,
+    "chart_refresh_ms": 1000
   },
   "market_hours": {
     "enabled": true,
