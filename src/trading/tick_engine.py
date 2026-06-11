@@ -44,6 +44,7 @@ class TickEngine:
         self._binance_stream: BinanceFuturesPriceStream | None = None
         self._cached_binance_tick: dict[str, Any] | None = None
         self._binance_tick_lock = threading.Lock()
+        self._mt5_fetch_paused = threading.Event()
 
     @property
     def latest(self) -> TickSnapshot | None:
@@ -53,6 +54,24 @@ class TickEngine:
     @property
     def uses_websocket(self) -> bool:
         return self._binance_stream is not None and self._binance_stream.is_running
+
+    def set_mt5_fetch_paused(self, paused: bool) -> None:
+        if paused:
+            self._mt5_fetch_paused.set()
+        else:
+            self._mt5_fetch_paused.clear()
+
+    def _cached_mt5_tick(self) -> dict[str, Any] | None:
+        with self._latest_lock:
+            latest = self._latest
+        if latest is None or latest.mt5_tick is None:
+            return None
+        return dict(latest.mt5_tick)
+
+    def _fetch_mt5_tick(self, symbol: str) -> dict[str, Any] | None:
+        if self._mt5_fetch_paused.is_set():
+            return self._cached_mt5_tick()
+        return self._mt5.get_tick(symbol)
 
     def subscribe(self, callback: TickCallback) -> None:
         with self._subscribers_lock:
@@ -141,7 +160,10 @@ class TickEngine:
 
         futures = []
         if self._mt5.is_connected:
-            futures.append(("mt5", self._pool.submit(self._mt5.get_tick, symbol["mt5"])))
+            if self._mt5_fetch_paused.is_set():
+                mt5_tick = self._cached_mt5_tick()
+            else:
+                futures.append(("mt5", self._pool.submit(self._mt5.get_tick, symbol["mt5"])))
         if self._binance.is_connected:
             futures.append(
                 ("binance", self._pool.submit(self._binance.get_ticker, symbol["binance"]))
@@ -176,7 +198,7 @@ class TickEngine:
 
         fetch_started = time.perf_counter()
         try:
-            mt5_tick = self._mt5.get_tick(symbol["mt5"])
+            mt5_tick = self._fetch_mt5_tick(symbol["mt5"])
         except Exception:
             mt5_tick = None
         fetch_duration_ms = (time.perf_counter() - fetch_started) * 1000

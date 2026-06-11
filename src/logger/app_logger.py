@@ -9,23 +9,29 @@ LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
 LOG_FILE = LOG_DIR / "forextrader.log"
 LOGGER_NAME = "forextrader"
 
-_formatter = logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+_formatter = logging.Formatter(
+    "%(asctime)s.%(msecs)03d  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+
+LogCallback = Callable[[str, int], None]
 
 
 class GuiLogHandler(logging.Handler):
-    def __init__(self, callback: Callable[[str], None]) -> None:
+    def __init__(self, callback: LogCallback) -> None:
         super().__init__()
         self._callback = callback
         self.setFormatter(_formatter)
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._callback(self.format(record))
+            self._callback(self.format(record), record.levelno)
         except Exception:
             self.handleError(record)
 
 
-def setup_logger(gui_callback: Callable[[str], None] | None = None) -> logging.Logger:
+def setup_logger(gui_callback: LogCallback | None = None) -> logging.Logger:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     logger = logging.getLogger(LOGGER_NAME)
@@ -57,6 +63,10 @@ def setup_logger(gui_callback: Callable[[str], None] | None = None) -> logging.L
 
 def log(message: str, level: int = logging.INFO) -> None:
     logging.getLogger(LOGGER_NAME).log(level, message)
+
+
+def log_warning(message: str) -> None:
+    logging.getLogger(LOGGER_NAME).warning(message)
 
 
 def flush_logs() -> None:

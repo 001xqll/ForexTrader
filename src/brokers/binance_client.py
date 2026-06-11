@@ -104,6 +104,83 @@ class BinanceFuturesClient:
             "source": "rest",
         }
 
+    @staticmethod
+    def _extract_fill_price(order: dict) -> float | None:
+        avg_price = float(order.get("avgPrice") or 0)
+        if avg_price > 0:
+            return avg_price
+        executed_qty = float(order.get("executedQty") or 0)
+        cum_quote = float(order.get("cumQuote") or 0)
+        if executed_qty > 0 and cum_quote > 0:
+            return cum_quote / executed_qty
+        return None
+
+    def create_market_order(self, symbol: str, side: str, quantity: float) -> tuple[bool, str, float | None]:
+        if not self._connected or self._client is None or not symbol or quantity <= 0:
+            return False, "Binance nincs csatlakozva vagy érvénytelen paraméter.", None
+
+        side_upper = side.upper()
+        if side_upper not in ("BUY", "SELL"):
+            return False, f"Ismeretlen oldal: {side}", None
+
+        try:
+            order = self._client.futures_create_order(
+                symbol=symbol.upper(),
+                side=side_upper,
+                type="MARKET",
+                quantity=quantity,
+            )
+        except Exception as exc:  # noqa: BLE001 - show broker error in UI
+            return False, f"Binance order hiba: {exc}", None
+        fill_price = self._extract_fill_price(order)
+        return True, f"Binance {side_upper} order sikeres.", fill_price
+
+    def close_all_positions(self, symbol: str) -> tuple[bool, str]:
+        if not self._connected or self._client is None or not symbol:
+            return False, "Binance nincs csatlakozva."
+
+        try:
+            positions = self._client.futures_position_information(symbol=symbol.upper())
+        except Exception as exc:  # noqa: BLE001
+            return False, f"Binance pozíció lekérés hiba: {exc}"
+
+        closed_any = False
+        for pos in positions:
+            amount = float(pos.get("positionAmt") or 0)
+            if amount == 0:
+                continue
+            side = "SELL" if amount > 0 else "BUY"
+            qty = abs(amount)
+            try:
+                self._client.futures_create_order(
+                    symbol=symbol.upper(),
+                    side=side,
+                    type="MARKET",
+                    quantity=qty,
+                )
+                closed_any = True
+            except Exception as exc:  # noqa: BLE001
+                return False, f"Binance zárás hiba: {exc}"
+
+        if not closed_any:
+            return True, "Nincs nyitott Binance pozíció."
+        return True, "Binance pozíciók zárva."
+
+    def count_position_units(self, symbol: str, unit_size: float) -> int:
+        if not self._connected or self._client is None or not symbol or unit_size <= 0:
+            return 0
+        try:
+            positions = self._client.futures_position_information(symbol=symbol.upper())
+        except Exception:
+            return 0
+
+        total_qty = 0.0
+        for pos in positions:
+            total_qty += abs(float(pos.get("positionAmt") or 0))
+        if total_qty == 0:
+            return 0
+        return int(round(total_qty / unit_size))
+
     def get_daily_klines(self, symbol: str, limit: int = 30) -> list[list[Any]] | None:
         if not self._connected or self._client is None or not symbol:
             return None

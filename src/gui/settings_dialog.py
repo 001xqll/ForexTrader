@@ -27,15 +27,18 @@ class SettingsDialog(tk.Toplevel):
         mt5_frame = ttk.Frame(notebook, padding=12)
         binance_frame = ttk.Frame(notebook, padding=12)
         symbols_frame = ttk.Frame(notebook, padding=12)
+        strategy_frame = ttk.Frame(notebook, padding=12)
         market_frame = ttk.Frame(notebook, padding=12)
         notebook.add(mt5_frame, text="MetaTrader 5")
         notebook.add(binance_frame, text="Binance Futures")
         notebook.add(symbols_frame, text="Szimbólumok")
+        notebook.add(strategy_frame, text="Stratégia")
         notebook.add(market_frame, text="Piaci nyitvatartás")
 
         self._mt5_vars = self._build_mt5_form(mt5_frame)
         self._binance_vars = self._build_binance_form(binance_frame)
         self._build_symbols_form(symbols_frame)
+        self._build_strategy_form(strategy_frame)
         self._market_vars = self._build_market_hours_form(market_frame)
 
         button_row = ttk.Frame(self)
@@ -202,6 +205,128 @@ class SettingsDialog(tk.Toplevel):
         ).pack(anchor="w", pady=(6, 0))
 
         self._refresh_pairs_listbox()
+
+    def _build_strategy_form(self, parent: ttk.Frame) -> None:
+        ttk.Label(
+            parent,
+            text=(
+                "Kék = bázis, zöld = bázis fölötti szintek, sárga = bázis alatti szintek. "
+                "Zárás: a diff visszatér a bázis közelébe (± zárási küszöb)."
+            ),
+            foreground="#555555",
+        ).pack(anchor="w", pady=(0, 10))
+
+        form = ttk.Frame(parent)
+        form.pack(fill="x")
+        form.columnconfigure(1, weight=1)
+
+        self._strat_base = tk.StringVar(value="10.0")
+        self._strat_exit_threshold = tk.StringVar(value="1.0")
+        self._strat_lot = tk.StringVar(value="0.01")
+        self._strat_binance_qty = tk.StringVar(value="")
+        self._strat_dry_run = tk.BooleanVar(value=True)
+
+        ttk.Label(form, text="Bázis (kék vonal)").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self._strat_base, width=12).grid(row=0, column=1, sticky="w", pady=4)
+        ttk.Label(form, text="Zárási küszöb (bázishoz)").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self._strat_exit_threshold, width=12).grid(
+            row=1, column=1, sticky="w", pady=4
+        )
+        ttk.Label(form, text="MT5 lot").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self._strat_lot, width=12).grid(row=2, column=1, sticky="w", pady=4)
+        ttk.Label(form, text="Binance qty (üres = lot×100)").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self._strat_binance_qty, width=12).grid(
+            row=3, column=1, sticky="w", pady=4
+        )
+        ttk.Checkbutton(
+            form,
+            text="Dry-run (ne küldjön éles megbízást)",
+            variable=self._strat_dry_run,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        ttk.Label(parent, text="Szintek távolsága a bázistól:").pack(anchor="w", pady=(12, 4))
+        self._strategy_levels: list[float] = []
+        self._selected_level_index = 0
+
+        list_frame = ttk.Frame(parent)
+        list_frame.pack(fill="x")
+        self._levels_listbox = tk.Listbox(list_frame, height=5, exportselection=False)
+        self._levels_listbox.pack(fill="x")
+        self._levels_listbox.bind("<<ListboxSelect>>", self._on_level_selected)
+
+        level_form = ttk.Frame(parent)
+        level_form.pack(fill="x", pady=(8, 0))
+        self._level_value = tk.StringVar()
+        ttk.Label(level_form, text="Szint érték:").pack(side="left")
+        ttk.Entry(level_form, textvariable=self._level_value, width=10).pack(side="left", padx=(8, 0))
+
+        level_buttons = ttk.Frame(parent)
+        level_buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(level_buttons, text="Hozzáadás", command=self._add_level).pack(side="left")
+        ttk.Button(level_buttons, text="Frissítés", command=self._update_level).pack(side="left", padx=(8, 0))
+        ttk.Button(level_buttons, text="Törlés", command=self._delete_level).pack(side="left", padx=(8, 0))
+
+    def _refresh_levels_listbox(self) -> None:
+        self._levels_listbox.delete(0, tk.END)
+        for index, level in enumerate(self._strategy_levels):
+            self._levels_listbox.insert(tk.END, f"+/- {level:g}  (bázis ± {level:g})")
+            if index == self._selected_level_index:
+                self._levels_listbox.selection_set(index)
+                self._levels_listbox.activate(index)
+        if self._strategy_levels and self._selected_level_index < len(self._strategy_levels):
+            self._level_value.set(str(self._strategy_levels[self._selected_level_index]))
+        else:
+            self._level_value.set("")
+
+    def _on_level_selected(self, _event: tk.Event | None = None) -> None:
+        selection = self._levels_listbox.curselection()
+        if not selection:
+            return
+        self._selected_level_index = selection[0]
+        self._level_value.set(str(self._strategy_levels[self._selected_level_index]))
+
+    def _read_level_value(self) -> float | None:
+        raw = self._level_value.get().strip().replace(",", ".")
+        try:
+            value = float(raw)
+        except ValueError:
+            messagebox.showerror("Hiba", "A szint csak szám lehet.")
+            return None
+        if value <= 0:
+            messagebox.showerror("Hiba", "A szintnek pozitívnak kell lennie.")
+            return None
+        return value
+
+    def _add_level(self) -> None:
+        value = self._read_level_value()
+        if value is None:
+            return
+        self._strategy_levels.append(value)
+        self._strategy_levels.sort()
+        self._selected_level_index = self._strategy_levels.index(value)
+        self._refresh_levels_listbox()
+
+    def _update_level(self) -> None:
+        value = self._read_level_value()
+        if value is None or not self._strategy_levels:
+            return
+        if self._selected_level_index < 0 or self._selected_level_index >= len(self._strategy_levels):
+            messagebox.showerror("Hiba", "Válassz ki egy szintet.")
+            return
+        self._strategy_levels[self._selected_level_index] = value
+        self._strategy_levels.sort()
+        self._selected_level_index = self._strategy_levels.index(value)
+        self._refresh_levels_listbox()
+
+    def _delete_level(self) -> None:
+        if not self._strategy_levels:
+            return
+        if self._selected_level_index < 0 or self._selected_level_index >= len(self._strategy_levels):
+            messagebox.showerror("Hiba", "Válassz ki egy szintet.")
+            return
+        del self._strategy_levels[self._selected_level_index]
+        self._selected_level_index = max(0, min(self._selected_level_index, len(self._strategy_levels) - 1))
+        self._refresh_levels_listbox()
 
     def _build_market_hours_form(self, parent: ttk.Frame) -> dict[str, Any]:
         vars_map: dict[str, Any] = {}
@@ -387,6 +512,18 @@ class SettingsDialog(tk.Toplevel):
         for day_id, day_var in self._market_vars["trading_days"].items():
             day_var.set(day_id in trading_days)
 
+        strategy = self._config.get("strategy", {})
+        self._strat_base.set(str(strategy.get("base", 10.0)))
+        self._strat_exit_threshold.set(str(strategy.get("exit_threshold", 1.0)))
+        self._strat_lot.set(str(strategy.get("lot_mt5", 0.01)))
+        qty = strategy.get("binance_quantity") or 0
+        self._strat_binance_qty.set("" if float(qty or 0) <= 0 else str(qty))
+        self._strat_dry_run.set(bool(strategy.get("dry_run", True)))
+        self._strategy_levels = [float(level) for level in strategy.get("levels", [5.0, 10.0])]
+        self._strategy_levels.sort()
+        self._selected_level_index = 0
+        self._refresh_levels_listbox()
+
     def _save(self) -> None:
         login_raw = self._mt5_vars["login"].get().strip()
         try:
@@ -430,6 +567,34 @@ class SettingsDialog(tk.Toplevel):
         updated["ui"] = {
             "price_refresh_ms": refresh_ms,
             "chart_refresh_ms": chart_refresh_ms,
+        }
+
+        try:
+            base = float(self._strat_base.get().strip().replace(",", "."))
+            exit_threshold = float(self._strat_exit_threshold.get().strip().replace(",", "."))
+            lot_mt5 = float(self._strat_lot.get().strip().replace(",", "."))
+            qty_raw = self._strat_binance_qty.get().strip().replace(",", ".")
+            binance_qty = float(qty_raw) if qty_raw else 0.0
+        except ValueError:
+            messagebox.showerror("Hiba", "A stratégia numerikus mezői csak számok lehetnek.")
+            return
+        if exit_threshold < 0:
+            messagebox.showerror("Hiba", "A zárási küszöb nem lehet negatív.")
+            return
+        if lot_mt5 <= 0:
+            messagebox.showerror("Hiba", "Az MT5 lot pozitív kell legyen.")
+            return
+        if not self._strategy_levels:
+            messagebox.showerror("Hiba", "Legalább egy szintet adj meg.")
+            return
+
+        updated["strategy"] = {
+            "base": base,
+            "levels": sorted(self._strategy_levels),
+            "exit_threshold": exit_threshold,
+            "lot_mt5": lot_mt5,
+            "binance_quantity": binance_qty,
+            "dry_run": bool(self._strat_dry_run.get()),
         }
 
         try:

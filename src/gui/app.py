@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import tkinter as tk
 from tkinter import scrolledtext, ttk
@@ -10,6 +11,7 @@ from src.config.settings import (
     get_chart_refresh_ms,
     get_price_refresh_ms,
     get_selected_symbol,
+    get_strategy_config,
     get_symbol_pairs,
     load_config,
     save_config,
@@ -20,19 +22,24 @@ from src.gui.log_viewer_dialog import LogViewerDialog
 from src.gui.settings_dialog import SettingsDialog
 from src.logger.app_logger import flush_logs
 from src.logger.app_logger import log as app_log
-from src.logger.app_logger import read_recent_log_lines, setup_logger
-from src.trading.market_hours import format_market_schedule, is_market_open
+from src.logger.app_logger import setup_logger
+from src.trading.market_hours import is_market_open
 from src.trading.runtime import TradingRuntime
 from src.trading.tick_snapshot import TickSnapshot
 
 
 class TradingApp(tk.Tk):
     MARKET_CHECK_SEC = 30
+    DEFAULT_WIDTH = 1120
+    DEFAULT_HEIGHT = 1000
+    MIN_WIDTH = 1020
+    MIN_HEIGHT = 860
 
     def __init__(self) -> None:
         super().__init__()
         self.title("ForexTrader")
-        self.minsize(780, 640)
+        self.geometry(f"{self.DEFAULT_WIDTH}x{self.DEFAULT_HEIGHT}")
+        self.minsize(self.MIN_WIDTH, self.MIN_HEIGHT)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._mt5 = MT5Client()
@@ -44,6 +51,10 @@ class TradingApp(tk.Tk):
             is_trading_allowed=lambda: self.is_trading_allowed,
         )
         self._runtime.subscribe_ticks(self._on_tick_snapshot)
+        self._runtime.set_main_thread_scheduler(lambda fn: self.after(0, fn))
+        self._runtime.strategy_engine.set_mismatch_callback(
+            lambda _blocked: self.after(0, self._refresh_status_labels)
+        )
 
         self._busy = False
         self._symbol_var = tk.StringVar()
@@ -54,6 +65,7 @@ class TradingApp(tk.Tk):
         self._build_ui()
         self._init_logging()
         self._reload_symbol_selector()
+        self._apply_chart_strategy_levels()
         self._refresh_status_labels()
         self._check_market_status(force_log=True)
         self._start_market_watch()
@@ -93,13 +105,12 @@ class TradingApp(tk.Tk):
             text="Disconnect",
             command=self._disconnect,
         )
-
         self._settings_btn.pack(side="left")
         self._connect_btn.pack(side="left", padx=(8, 0))
         self._disconnect_btn.pack(side="left", padx=(8, 0))
 
         chart_frame = ttk.LabelFrame(self, text="Különbségi árfolyam (30 nap, D1)", padding=8)
-        chart_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        chart_frame.pack(fill="x", padx=12, pady=(0, 8))
 
         selector_row = ttk.Frame(chart_frame)
         selector_row.pack(fill="x", pady=(0, 8))
@@ -114,7 +125,7 @@ class TradingApp(tk.Tk):
         self._symbol_combo.bind("<<ComboboxSelected>>", self._on_symbol_changed)
 
         self._chart = DiffChartPanel(chart_frame)
-        self._chart.pack(fill="both", expand=True)
+        self._chart.pack(anchor="nw")
 
         log_frame = ttk.LabelFrame(self, text="Napló", padding=12)
         log_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
@@ -122,17 +133,27 @@ class TradingApp(tk.Tk):
         log_toolbar = ttk.Frame(log_frame)
         log_toolbar.pack(fill="x", pady=(0, 8))
         ttk.Button(log_toolbar, text="Előzmények", command=self._open_log_viewer).pack(side="left")
-        ttk.Button(log_toolbar, text="Napló újratöltése", command=self._reload_log_history).pack(
-            side="left", padx=(8, 0)
-        )
 
         self._log_text = scrolledtext.ScrolledText(
             log_frame,
-            height=5,
-            wrap="word",
+            height=12,
+            wrap="none",
             font=("Consolas", 9),
         )
+        self._log_hscroll = ttk.Scrollbar(
+            log_frame,
+            orient="horizontal",
+            command=self._log_text.xview,
+        )
+        self._log_text.configure(xscrollcommand=self._log_hscroll.set)
+        self._log_text.tag_configure(
+            "log_warning",
+            foreground="#b91c1c",
+            font=("Consolas", 9, "bold"),
+        )
+        self._log_text.tag_configure("log_warning_sep", foreground="#b91c1c")
         self._log_text.pack(fill="both", expand=True)
+        self._log_hscroll.pack(fill="x")
         self._log_text.configure(state="disabled")
 
     def _set_busy(self, busy: bool) -> None:
@@ -142,27 +163,24 @@ class TradingApp(tk.Tk):
         self._disconnect_btn.configure(state=state)
 
     def _init_logging(self) -> None:
-        self._reload_log_history()
         setup_logger(gui_callback=self._append_log_line)
         self._log("ForexTrader elindult.")
 
-    def _append_log_line(self, line: str) -> None:
+    def _append_log_line(self, line: str, level: int = logging.INFO) -> None:
         def write() -> None:
             self._log_text.configure(state="normal")
-            self._log_text.insert("end", line + "\n")
+            if level >= logging.WARNING:
+                separator = "─" * 72
+                self._log_text.insert("end", separator + "\n", ("log_warning_sep",))
+                self._log_text.insert("end", "  !!! FIGYELEM !!!\n", ("log_warning",))
+                self._log_text.insert("end", line + "\n", ("log_warning",))
+                self._log_text.insert("end", separator + "\n", ("log_warning_sep",))
+            else:
+                self._log_text.insert("end", line + "\n")
             self._log_text.see("end")
             self._log_text.configure(state="disabled")
 
         self.after(0, write)
-
-    def _reload_log_history(self) -> None:
-        lines = read_recent_log_lines()
-        self._log_text.configure(state="normal")
-        self._log_text.delete("1.0", "end")
-        if lines:
-            self._log_text.insert("1.0", "\n".join(lines) + "\n")
-            self._log_text.see("end")
-        self._log_text.configure(state="disabled")
 
     def _open_log_viewer(self) -> None:
         LogViewerDialog(self)
@@ -184,6 +202,15 @@ class TradingApp(tk.Tk):
         return is_market_open(load_config())
 
     def _update_market_status_label(self) -> None:
+        if self._runtime_active and self._runtime.strategy_engine.position_mismatch:
+            reason = self._runtime.strategy_engine.mismatch_reason
+            self._market_status.configure(
+                text=f"Kereskedés: TILTVA (pozíció eltérés: {reason})",
+                foreground="#b91c1c",
+            )
+            return
+
+        self._market_status.configure(foreground="")
         config = load_config()
         market_cfg = config.get("market_hours", {})
         if not market_cfg.get("enabled", True):
@@ -222,11 +249,10 @@ class TradingApp(tk.Tk):
 
         is_open = self.is_trading_allowed
         if force_log or self._last_market_open is None or is_open != self._last_market_open:
-            schedule = format_market_schedule(config)
             if is_open:
-                self._log(f"Kereskedés engedélyezve — piac nyitva. ({schedule})")
+                self._log("Kereskedés engedélyezve — piac nyitva.")
             else:
-                self._log(f"Várakozás piacnyitásra — a piac jelenleg zárva. ({schedule})")
+                self._log("Várakozás piacnyitásra — a piac jelenleg zárva.")
             self._last_market_open = is_open
 
         self._update_market_status_label()
@@ -267,6 +293,10 @@ class TradingApp(tk.Tk):
     def _get_current_symbol(self) -> dict[str, str] | None:
         return get_selected_symbol(load_config())
 
+    def _apply_chart_strategy_levels(self) -> None:
+        strategy = get_strategy_config()
+        self._chart.set_strategy_levels(strategy["base"], strategy["levels"])
+
     def _load_history_if_needed(self, force: bool = False) -> None:
         symbol = self._get_current_symbol()
         if symbol is None:
@@ -301,6 +331,7 @@ class TradingApp(tk.Tk):
                         symbol["binance"],
                         symbol["name"],
                     )
+                    self._apply_chart_strategy_levels()
                     self._log("30 napos D1 grafikon betöltve.")
 
             self.after(0, finish)
@@ -344,6 +375,7 @@ class TradingApp(tk.Tk):
         timezone = market.get("timezone", "—")
         self._log(f"Beállítások frissítve. Időzóna: {timezone}")
         self._reload_symbol_selector()
+        self._apply_chart_strategy_levels()
         self._last_market_open = None
         self._check_market_status(force_log=True)
         if self._runtime_active:

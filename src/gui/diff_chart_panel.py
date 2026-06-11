@@ -12,14 +12,26 @@ from matplotlib.patches import Rectangle
 
 class DiffChartPanel(ttk.Frame):
     HIST_REFRESH_SEC = 3600
+    FIG_WIDTH_IN = 7.5
+    FIG_HEIGHT_IN = 3.8
+    FIG_DPI = 100
 
     def __init__(self, master: tk.Misc) -> None:
-        super().__init__(master)
+        chart_px_w = int(self.FIG_WIDTH_IN * self.FIG_DPI)
+        chart_px_h = int(self.FIG_HEIGHT_IN * self.FIG_DPI)
+        super().__init__(master, width=chart_px_w, height=chart_px_h)
+        self.pack_propagate(False)
 
-        self._fig = Figure(figsize=(7.5, 3.8), dpi=100, layout="tight")
+        self._fig = Figure(
+            figsize=(self.FIG_WIDTH_IN, self.FIG_HEIGHT_IN),
+            dpi=self.FIG_DPI,
+            layout="tight",
+        )
         self._ax = self._fig.add_subplot(111)
         self._canvas = FigureCanvasTkAgg(self._fig, master=self)
-        self._canvas.get_tk_widget().pack(fill="both", expand=True)
+        canvas_widget = self._canvas.get_tk_widget()
+        canvas_widget.configure(width=chart_px_w, height=chart_px_h)
+        canvas_widget.pack(anchor="nw")
 
         self._df_cache: pd.DataFrame | None = None
         self._symbol_key: tuple[str, str] | None = None
@@ -29,6 +41,8 @@ class DiffChartPanel(ttk.Frame):
         self._live_label = None
         self._hist_loading = False
         self._title_symbol = ""
+        self._strategy_base: float | None = None
+        self._strategy_levels: list[float] = []
 
         self.clear()
 
@@ -39,6 +53,8 @@ class DiffChartPanel(ttk.Frame):
         self._live_line = None
         self._live_label = None
         self._hist_loading = False
+        self._strategy_base = None
+        self._strategy_levels = []
         self._ax.clear()
         self._ax.set_title("Különbségi árfolyam (MT5 − Binance)")
         self._ax.text(
@@ -57,6 +73,12 @@ class DiffChartPanel(ttk.Frame):
         if self._df_cache is None or self._symbol_key != key:
             return True
         return time.time() - self._last_hist_refresh >= self.HIST_REFRESH_SEC
+
+    def set_strategy_levels(self, base: float, levels: list[float]) -> None:
+        self._strategy_base = float(base)
+        self._strategy_levels = sorted({float(level) for level in levels if float(level) > 0})
+        if self._df_cache is not None:
+            self._draw_static(self._df_cache)
 
     def set_history(
         self,
@@ -155,10 +177,39 @@ class DiffChartPanel(ttk.Frame):
         self._ax.set_ylabel("MT5 − Binance")
         self._ax.grid(True, linestyle=":", alpha=0.35)
 
+    def _draw_strategy_levels(self) -> None:
+        if self._strategy_base is None:
+            return
+        base = self._strategy_base
+        self._ax.axhline(
+            base,
+            color="#2563eb",
+            linestyle="-",
+            linewidth=1.3,
+            alpha=0.9,
+            label="Bázis",
+        )
+        for level in self._strategy_levels:
+            self._ax.axhline(
+                base + level,
+                color="#16a34a",
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.75,
+            )
+            self._ax.axhline(
+                base - level,
+                color="#ca8a04",
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.75,
+            )
+
     def _draw_static(self, df_diff: pd.DataFrame) -> None:
         self._ax.clear()
         self._draw_candles(df_diff)
         self._ax.axhline(0, color="#888888", linestyle=":", alpha=0.6)
+        self._draw_strategy_levels()
 
         current_diff = float(df_diff["Close"].iloc[-1])
         self._live_line = self._ax.axhline(
