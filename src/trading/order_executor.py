@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TypeVar
 from src.brokers.binance_client import BinanceFuturesClient
 from src.brokers.mt5_client import MT5Client
+from src.logger.app_logger import log_warning
 from src.trading.tick_snapshot import TickSnapshot
 
 LogFn = Callable[[str], None]
@@ -178,30 +179,31 @@ class OrderExecutor:
         binance_qty: float,
         started_mono: float,
     ) -> tuple[OrderLegResult, OrderLegResult]:
-        binance_timing: dict[str, float] = {}
+        binance_timing: dict[str, float | dict | None] = {}
 
         def run_binance_leg() -> tuple[bool, str, float | None]:
             leg_start = time.perf_counter()
+            order: dict | None = None
+            api_ms = 0.0
             try:
-                ok, msg, fill_price = self._binance.create_market_order(
+                ok, msg, fill_price, order, api_ms = self._binance.create_market_order(
                     snapshot.binance_symbol,
                     binance_side,
                     binance_qty,
                 )
             except Exception as exc:  # noqa: BLE001
-                ok, msg, fill_price = False, str(exc), None
+                ok, msg, fill_price, order = False, str(exc), None, None
             done_mono = time.perf_counter()
             elapsed_from_start = (done_mono - started_mono) * 1000
             leg_duration = (done_mono - leg_start) * 1000
             binance_timing["elapsed_from_start"] = elapsed_from_start
             binance_timing["leg_duration"] = leg_duration
-            if fill_price is not None:
-                binance_timing["fill_price"] = fill_price
+            binance_timing["fill_price"] = fill_price
+            binance_timing["order"] = order
             detail = self._format_leg_detail(
                 binance_side,
                 snapshot.binance_symbol,
                 f"qty={binance_qty}",
-                fill_price,
             )
             self._log_leg_opened(
                 "Binance",
@@ -209,8 +211,8 @@ class OrderExecutor:
                 leg_duration_ms=leg_duration,
                 success=ok,
                 detail=detail,
-                fill_price=fill_price,
                 dry_run=False,
+                api_ms=api_ms,
             )
             return ok, msg, fill_price
 
@@ -220,15 +222,16 @@ class OrderExecutor:
         mt5_result_tuple = self._run_on_main_thread(
             lambda: self._mt5.open_market_order(snapshot.mt5_symbol, mt5_side, lot_mt5)
         )
+        mt5_ticket: int | None = None
         if mt5_result_tuple is None:
             mt5_ok, mt5_msg, mt5_fill = False, "Időtúllépés a főszálon.", None
         else:
-            mt5_ok, mt5_msg, mt5_fill = mt5_result_tuple
+            mt5_ok, mt5_msg, mt5_fill, mt5_ticket = mt5_result_tuple
         mt5_done_mono = time.perf_counter()
         mt5_elapsed_from_start = (mt5_done_mono - started_mono) * 1000
         mt5_leg_duration = (mt5_done_mono - mt5_leg_start) * 1000
         mt5_detail = self._format_leg_detail(
-            mt5_side, snapshot.mt5_symbol, f"vol={lot_mt5}", mt5_fill
+            mt5_side, snapshot.mt5_symbol, f"vol={lot_mt5}"
         )
         self._log_leg_opened(
             "MT5",
@@ -236,7 +239,6 @@ class OrderExecutor:
             leg_duration_ms=mt5_leg_duration,
             success=mt5_ok,
             detail=mt5_detail,
-            fill_price=mt5_fill,
             dry_run=False,
         )
 
@@ -250,18 +252,56 @@ class OrderExecutor:
         )
         bin_leg_duration = binance_timing.get("leg_duration", 0.0)
         if bin_fill is None:
-            bin_fill = binance_timing.get("fill_price")
+            stored_fill = binance_timing.get("fill_price")
+            if isinstance(stored_fill, (int, float)):
+                bin_fill = float(stored_fill)
 
         self._log_leg_gap(mt5_elapsed_from_start, bin_elapsed_from_start, dry_run=False)
 
-        if mt5_ok and not bin_ok:
-            self._log("Binance nyitás sikertelen — MT5 pozíció visszagörgetése.")
-            self._run_on_main_thread(
-                lambda: self._mt5.close_all_positions(snapshot.mt5_symbol)
+        if mt5_ok and bin_ok:
+            binance_order = binance_timing.get("order")
+            self._schedule_fill_prices_log(
+                mt5_fill=mt5_fill,
+                binance_symbol=snapshot.binance_symbol,
+                binance_order=binance_order if isinstance(binance_order, dict) else None,
+                binance_fill=bin_fill,
             )
+
+        if mt5_ok and not bin_ok:
+            self._log(
+                f"Binance nyitás sikertelen — MT5 visszagörgetés ({lot_mt5:g} lot)."
+            )
+            ticket = mt5_ticket
+
+            def rollback_mt5() -> tuple[bool, str]:
+                return self._mt5.rollback_open_leg(
+                    snapshot.mt5_symbol,
+                    volume=lot_mt5,
+                    side=mt5_side,
+                    position_ticket=ticket,
+                )
+
+            rollback_ok, rollback_msg = self._run_on_main_thread(rollback_mt5) or (
+                False,
+                "Időtúllépés a főszálon.",
+            )
+            if not rollback_ok:
+                log_warning(f"MT5 visszagörgetés sikertelen: {rollback_msg}")
+            else:
+                self._log(rollback_msg)
         elif bin_ok and not mt5_ok:
-            self._log("MT5 nyitás sikertelen — Binance pozíció visszagörgetése.")
-            self._binance.close_all_positions(snapshot.binance_symbol)
+            self._log(
+                f"MT5 nyitás sikertelen — Binance visszagörgetés (qty={binance_qty:g})."
+            )
+            rollback_ok, rollback_msg = self._binance.rollback_open_leg(
+                snapshot.binance_symbol,
+                quantity=binance_qty,
+                opened_side=binance_side,
+            )
+            if not rollback_ok:
+                log_warning(f"Binance visszagörgetés sikertelen: {rollback_msg}")
+            else:
+                self._log(rollback_msg)
 
         return (
             OrderLegResult("MT5", mt5_ok, mt5_detail, mt5_leg_duration, mt5_fill),
@@ -414,15 +454,28 @@ class OrderExecutor:
             return float(snapshot.binance_price) if snapshot.binance_price is not None else None
         return None
 
-    @classmethod
-    def _format_leg_detail(
-        cls,
-        side: str,
-        symbol: str,
-        size_part: str,
-        fill_price: float | None,
-    ) -> str:
-        return f"{side} {symbol} {size_part} @ {cls._format_price(fill_price)}"
+    @staticmethod
+    def _format_leg_detail(side: str, symbol: str, size_part: str) -> str:
+        return f"{side} {symbol} {size_part}"
+
+    def _schedule_fill_prices_log(
+        self,
+        *,
+        mt5_fill: float | None,
+        binance_symbol: str,
+        binance_order: dict | None,
+        binance_fill: float | None,
+    ) -> None:
+        def task() -> None:
+            fill = binance_fill
+            if fill is None and binance_order is not None:
+                fill = self._binance.poll_fill_price(binance_symbol, binance_order)
+            self._log(
+                f"[Fill ár] MT5 @ {self._format_price(mt5_fill)} | "
+                f"Binance @ {self._format_price(fill)}"
+            )
+
+        self._pool.submit(task)
 
     def _log_leg_opened(
         self,
@@ -432,15 +485,18 @@ class OrderExecutor:
         leg_duration_ms: float,
         success: bool,
         detail: str,
-        fill_price: float | None,
         dry_run: bool,
+        api_ms: float | None = None,
     ) -> None:
         mode = "DRY-RUN" if dry_run else "ÉLES"
         status = "OK" if success else "HIBA"
-        price_note = " (tick ár)" if dry_run and fill_price is not None else ""
+        if api_ms is not None:
+            timing = f"API: {api_ms:.1f} ms"
+        else:
+            timing = f"{leg_duration_ms:.1f} ms order"
         self._log(
             f"[Order {mode}] {venue} pozíció nyitva: +{elapsed_from_start_ms:.1f} ms a jeltől "
-            f"({leg_duration_ms:.1f} ms order) — {detail}{price_note} [{status}]"
+            f"({timing}) — {detail} [{status}]"
         )
 
     def _log_leg_closed(

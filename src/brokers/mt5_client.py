@@ -139,23 +139,25 @@ class MT5Client:
                 for rate in rates
             ]
 
-    def open_market_order(self, symbol: str, side: str, volume: float) -> tuple[bool, str, float | None]:
+    def open_market_order(
+        self, symbol: str, side: str, volume: float
+    ) -> tuple[bool, str, float | None, int | None]:
         if not self._connected or not symbol or volume <= 0:
-            return False, "MT5 nincs csatlakozva vagy érvénytelen paraméter.", None
+            return False, "MT5 nincs csatlakozva vagy érvénytelen paraméter.", None, None
 
         import MetaTrader5 as mt5
 
         with self._api_lock:
             info = mt5.symbol_info(symbol)
             if info is None:
-                return False, f"Ismeretlen szimbólum: {symbol}", None
+                return False, f"Ismeretlen szimbólum: {symbol}", None, None
 
             if not info.visible and not mt5.symbol_select(symbol, True):
-                return False, f"Szimbólum nem választható: {symbol}", None
+                return False, f"Szimbólum nem választható: {symbol}", None, None
 
             tick = mt5.symbol_info_tick(symbol)
             if tick is None:
-                return False, "Nincs tick adat.", None
+                return False, "Nincs tick adat.", None, None
 
             side_upper = side.upper()
             if side_upper == "BUY":
@@ -165,7 +167,7 @@ class MT5Client:
                 order_type = mt5.ORDER_TYPE_SELL
                 price = tick.bid
             else:
-                return False, f"Ismeretlen oldal: {side}", None
+                return False, f"Ismeretlen oldal: {side}", None, None
 
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
@@ -178,13 +180,93 @@ class MT5Client:
             }
             result = mt5.order_send(request)
             if result is None:
-                return False, f"MT5 order_send hiba: {mt5.last_error()}", None
+                return False, f"MT5 order_send hiba: {mt5.last_error()}", None, None
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
-                return False, f"MT5 order elutasítva: {result.comment} ({result.retcode})", None
+                return False, f"MT5 order elutasítva: {result.comment} ({result.retcode})", None, None
 
             fill_price = float(result.price) if result.price else None
-            return True, "MT5 order sikeres.", fill_price
+            position_ticket = int(result.position) if getattr(result, "position", 0) else None
+            return True, "MT5 order sikeres.", fill_price, position_ticket
+
+    def rollback_open_leg(
+        self,
+        symbol: str,
+        *,
+        volume: float,
+        side: str,
+        position_ticket: int | None = None,
+    ) -> tuple[bool, str]:
+        if position_ticket:
+            return self.close_position_ticket(symbol, position_ticket, volume)
+        return self.close_latest_position(symbol, volume, side)
+
+    def close_position_ticket(
+        self,
+        symbol: str,
+        ticket: int,
+        volume: float | None = None,
+    ) -> tuple[bool, str]:
+        if not self._connected or not symbol or ticket <= 0:
+            return False, "MT5 nincs csatlakozva vagy érvénytelen pozíció."
+
+        import MetaTrader5 as mt5
+
+        with self._api_lock:
+            positions = mt5.positions_get(symbol=symbol)
+            position = next((pos for pos in positions or [] if pos.ticket == ticket), None)
+            if position is None:
+                return False, f"MT5 pozíció nem található: {ticket}"
+
+            close_volume = float(volume) if volume and volume > 0 else float(position.volume)
+            close_volume = min(close_volume, float(position.volume))
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                return False, "Nincs tick adat záráshoz."
+
+            if position.type == mt5.ORDER_TYPE_BUY:
+                order_type = mt5.ORDER_TYPE_SELL
+                price = tick.bid
+            else:
+                order_type = mt5.ORDER_TYPE_BUY
+                price = tick.ask
+
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": close_volume,
+                "type": order_type,
+                "position": position.ticket,
+                "price": price,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            result = mt5.order_send(request)
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                comment = result.comment if result else mt5.last_error()
+                return False, f"MT5 visszagörgetés sikertelen: {comment}"
+            return True, f"MT5 visszagörgetés: {close_volume:g} lot (ticket {ticket})"
+
+    def close_latest_position(self, symbol: str, volume: float, side: str) -> tuple[bool, str]:
+        if not self._connected or not symbol or volume <= 0:
+            return False, "MT5 nincs csatlakozva vagy érvénytelen mennyiség."
+
+        import MetaTrader5 as mt5
+
+        with self._api_lock:
+            positions = mt5.positions_get(symbol=symbol)
+            side_upper = side.upper()
+            order_type = (
+                mt5.ORDER_TYPE_BUY if side_upper == "BUY" else mt5.ORDER_TYPE_SELL
+            )
+            matching = [pos for pos in positions or [] if pos.type == order_type]
+            if not matching:
+                return False, "Nincs egyező MT5 pozíció a visszagörgetéshez."
+
+            latest = max(matching, key=lambda pos: pos.time)
+            ticket = latest.ticket
+
+        return self.close_position_ticket(symbol, ticket, volume)
 
     def close_all_positions(self, symbol: str) -> tuple[bool, str]:
         if not self._connected or not symbol:

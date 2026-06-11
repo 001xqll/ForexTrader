@@ -170,6 +170,14 @@ class StrategyEngine:
                 self._open_at_level(snapshot, level, "neg", lot_mt5, binance_qty, base)
                 return
 
+    @staticmethod
+    def _format_diff_prices(snapshot: TickSnapshot) -> str:
+        mt5_text = f"{snapshot.mt5_bid:.2f}" if snapshot.mt5_bid is not None else "—"
+        binance_text = (
+            f"{snapshot.binance_price:.2f}" if snapshot.binance_price is not None else "—"
+        )
+        return f" MT5_bid={mt5_text} Binance={binance_text}"
+
     def _open_at_level(
         self,
         snapshot: TickSnapshot,
@@ -184,14 +192,15 @@ class StrategyEngine:
 
         if not dry_run:
             signal_to_order_ms = (time.perf_counter() - snapshot.ts_mono) * 1000
+            prices = self._format_diff_prices(snapshot)
             if direction == "pos":
                 self._log(
-                    f"[Szint +{level:g}] diff={snapshot.diff:+.2f} (bázis={base:.2f}) → "
+                    f"[Szint +{level:g}] diff={snapshot.diff:+.2f} (bázis={base:.2f}){prices} → "
                     f"MT5 SHORT + Binance LONG | tick→jel={signal_to_order_ms:.1f} ms"
                 )
             else:
                 self._log(
-                    f"[Szint -{level:g}] diff={snapshot.diff:+.2f} (bázis={base:.2f}) → "
+                    f"[Szint -{level:g}] diff={snapshot.diff:+.2f} (bázis={base:.2f}){prices} → "
                     f"MT5 LONG + Binance SHORT | tick→jel={signal_to_order_ms:.1f} ms"
                 )
 

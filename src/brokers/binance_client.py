@@ -115,14 +115,41 @@ class BinanceFuturesClient:
             return cum_quote / executed_qty
         return None
 
-    def create_market_order(self, symbol: str, side: str, quantity: float) -> tuple[bool, str, float | None]:
+    def poll_fill_price(self, symbol: str, order: dict) -> float | None:
+        fill_price = self._extract_fill_price(order)
+        if fill_price is not None or self._client is None:
+            return fill_price
+
+        order_id = order.get("orderId")
+        if not order_id:
+            return None
+
+        symbol_upper = symbol.upper()
+        for _ in range(4):
+            time.sleep(0.03)
+            try:
+                fresh = self._client.futures_get_order(
+                    symbol=symbol_upper,
+                    orderId=order_id,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            fill_price = self._extract_fill_price(fresh)
+            if fill_price is not None:
+                return fill_price
+        return None
+
+    def create_market_order(
+        self, symbol: str, side: str, quantity: float
+    ) -> tuple[bool, str, float | None, dict | None, float]:
         if not self._connected or self._client is None or not symbol or quantity <= 0:
-            return False, "Binance nincs csatlakozva vagy érvénytelen paraméter.", None
+            return False, "Binance nincs csatlakozva vagy érvénytelen paraméter.", None, None, 0.0
 
         side_upper = side.upper()
         if side_upper not in ("BUY", "SELL"):
-            return False, f"Ismeretlen oldal: {side}", None
+            return False, f"Ismeretlen oldal: {side}", None, None, 0.0
 
+        api_started = time.perf_counter()
         try:
             order = self._client.futures_create_order(
                 symbol=symbol.upper(),
@@ -131,9 +158,32 @@ class BinanceFuturesClient:
                 quantity=quantity,
             )
         except Exception as exc:  # noqa: BLE001 - show broker error in UI
-            return False, f"Binance order hiba: {exc}", None
+            api_ms = (time.perf_counter() - api_started) * 1000
+            return False, f"Binance order hiba: {exc}", None, None, api_ms
+        api_ms = (time.perf_counter() - api_started) * 1000
         fill_price = self._extract_fill_price(order)
-        return True, f"Binance {side_upper} order sikeres.", fill_price
+        return True, f"Binance {side_upper} order sikeres.", fill_price, order, api_ms
+
+    def rollback_open_leg(self, symbol: str, *, quantity: float, opened_side: str) -> tuple[bool, str]:
+        if not self._connected or self._client is None or not symbol or quantity <= 0:
+            return False, "Binance nincs csatlakozva vagy érvénytelen mennyiség."
+
+        opened_upper = opened_side.upper()
+        if opened_upper not in ("BUY", "SELL"):
+            return False, f"Ismeretlen oldal: {opened_side}"
+
+        close_side = "SELL" if opened_upper == "BUY" else "BUY"
+        try:
+            self._client.futures_create_order(
+                symbol=symbol.upper(),
+                side=close_side,
+                type="MARKET",
+                quantity=quantity,
+                reduceOnly=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return False, f"Binance visszagörgetés hiba: {exc}"
+        return True, f"Binance visszagörgetés: {close_side} {quantity}"
 
     def close_all_positions(self, symbol: str) -> tuple[bool, str]:
         if not self._connected or self._client is None or not symbol:
