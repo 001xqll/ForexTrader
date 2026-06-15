@@ -269,21 +269,23 @@ class MT5Client:
 
         return self.close_position_ticket(symbol, ticket, volume)
 
-    def close_all_positions(self, symbol: str) -> tuple[bool, str]:
+    def close_all_positions(self, symbol: str) -> tuple[bool, str, float | None]:
         if not self._connected or not symbol:
-            return False, "MT5 nincs csatlakozva."
+            return False, "MT5 nincs csatlakozva.", None
 
         import MetaTrader5 as mt5
 
         with self._api_lock:
             positions = mt5.positions_get(symbol=symbol)
             if not positions:
-                return True, "Nincs nyitott MT5 pozíció."
+                return True, "Nincs nyitott MT5 pozíció.", None
 
+            weighted_sum = 0.0
+            total_volume = 0.0
             for pos in positions:
                 tick = mt5.symbol_info_tick(symbol)
                 if tick is None:
-                    return False, "Nincs tick adat záráshoz."
+                    return False, "Nincs tick adat záráshoz.", None
 
                 if pos.type == mt5.ORDER_TYPE_BUY:
                     order_type = mt5.ORDER_TYPE_SELL
@@ -305,9 +307,14 @@ class MT5Client:
                 result = mt5.order_send(request)
                 if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                     comment = result.comment if result else mt5.last_error()
-                    return False, f"MT5 zárás sikertelen: {comment}"
+                    return False, f"MT5 zárás sikertelen: {comment}", None
+                if result.price:
+                    volume = float(pos.volume)
+                    weighted_sum += float(result.price) * volume
+                    total_volume += volume
 
-            return True, "MT5 pozíciók zárva."
+            fill_price = weighted_sum / total_volume if total_volume > 0 else None
+            return True, "MT5 pozíciók zárva.", fill_price
 
     def count_positions(self, symbol: str) -> int:
         if not self._connected or not symbol:

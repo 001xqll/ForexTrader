@@ -197,6 +197,9 @@ class StrategyEngine:
         if self._post_sl_lock:
             return
 
+        if stop_loss > 0 and abs(dist_from_base) >= stop_loss:
+            return
+
         for level in levels:
             if diff >= base + level and not self._levels_hit.is_hit(level, "pos"):
                 if not self._spread_allows_trading(snapshot, strategy):

@@ -189,16 +189,22 @@ class BinanceFuturesClient:
             return False, f"Binance visszagörgetés hiba: {exc}"
         return True, f"Binance visszagörgetés: {close_side} {quantity}"
 
-    def close_all_positions(self, symbol: str) -> tuple[bool, str]:
+    def close_all_positions(
+        self, symbol: str
+    ) -> tuple[bool, str, float | None, dict | None]:
         if not self._connected or self._client is None or not symbol:
-            return False, "Binance nincs csatlakozva."
+            return False, "Binance nincs csatlakozva.", None, None
 
         try:
             positions = self._client.futures_position_information(symbol=symbol.upper())
         except Exception as exc:  # noqa: BLE001
-            return False, f"Binance pozíció lekérés hiba: {exc}"
+            return False, f"Binance pozíció lekérés hiba: {exc}", None, None
 
         closed_any = False
+        weighted_sum = 0.0
+        total_qty = 0.0
+        last_order: dict | None = None
+        last_fill: float | None = None
         for pos in positions:
             amount = float(pos.get("positionAmt") or 0)
             if amount == 0:
@@ -206,19 +212,27 @@ class BinanceFuturesClient:
             side = "SELL" if amount > 0 else "BUY"
             qty = abs(amount)
             try:
-                self._client.futures_create_order(
+                order = self._client.futures_create_order(
                     symbol=symbol.upper(),
                     side=side,
                     type="MARKET",
                     quantity=qty,
+                    reduceOnly=True,
                 )
-                closed_any = True
             except Exception as exc:  # noqa: BLE001
-                return False, f"Binance zárás hiba: {exc}"
+                return False, f"Binance zárás hiba: {exc}", None, None
+            closed_any = True
+            last_order = order
+            fill_price = self._extract_fill_price(order)
+            if fill_price is not None:
+                last_fill = fill_price
+                weighted_sum += fill_price * qty
+                total_qty += qty
 
         if not closed_any:
-            return True, "Nincs nyitott Binance pozíció."
-        return True, "Binance pozíciók zárva."
+            return True, "Nincs nyitott Binance pozíció.", None, None
+        avg_fill = weighted_sum / total_qty if total_qty > 0 else last_fill
+        return True, "Binance pozíciók zárva.", avg_fill, last_order
 
     def count_position_units(self, symbol: str, unit_size: float) -> int:
         if not self._connected or self._client is None or not symbol or unit_size <= 0:

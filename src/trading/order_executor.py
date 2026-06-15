@@ -333,19 +333,26 @@ class OrderExecutor:
         snapshot: TickSnapshot,
         started_mono: float,
     ) -> tuple[OrderLegResult, OrderLegResult]:
-        binance_timing: dict[str, float] = {}
+        binance_timing: dict[str, float | dict | None] = {}
+        mt5_fill: float | None = None
+        bin_fill: float | None = None
+        binance_order: dict | None = None
 
-        def run_binance_close() -> tuple[bool, str]:
+        def run_binance_close() -> tuple[bool, str, float | None, dict | None]:
             leg_start = time.perf_counter()
             try:
-                ok, msg = self._binance.close_all_positions(snapshot.binance_symbol)
+                ok, msg, fill_price, order = self._binance.close_all_positions(
+                    snapshot.binance_symbol
+                )
             except Exception as exc:  # noqa: BLE001
-                ok, msg = False, str(exc)
+                ok, msg, fill_price, order = False, str(exc), None, None
             done_mono = time.perf_counter()
             elapsed_from_start = (done_mono - started_mono) * 1000
             leg_duration = (done_mono - leg_start) * 1000
             binance_timing["elapsed_from_start"] = elapsed_from_start
             binance_timing["leg_duration"] = leg_duration
+            binance_timing["fill_price"] = fill_price
+            binance_timing["order"] = order
             detail = f"zárás {snapshot.binance_symbol}"
             self._log_leg_closed(
                 "Binance",
@@ -355,7 +362,7 @@ class OrderExecutor:
                 detail=detail if ok else msg,
                 dry_run=False,
             )
-            return ok, msg
+            return ok, msg, fill_price, order
 
         bin_future = self._pool.submit(run_binance_close)
 
@@ -364,9 +371,9 @@ class OrderExecutor:
             lambda: self._mt5.close_all_positions(snapshot.mt5_symbol)
         )
         if mt5_result_tuple is None:
-            mt5_ok, mt5_msg = False, "Időtúllépés a főszálon."
+            mt5_ok, mt5_msg, mt5_fill = False, "Időtúllépés a főszálon.", None
         else:
-            mt5_ok, mt5_msg = mt5_result_tuple
+            mt5_ok, mt5_msg, mt5_fill = mt5_result_tuple
         mt5_done_mono = time.perf_counter()
         mt5_elapsed_from_start = (mt5_done_mono - started_mono) * 1000
         mt5_leg_duration = (mt5_done_mono - mt5_leg_start) * 1000
@@ -381,32 +388,48 @@ class OrderExecutor:
         )
 
         try:
-            bin_ok, bin_msg = bin_future.result(timeout=30)
+            bin_ok, bin_msg, bin_fill, binance_order = bin_future.result(timeout=30)
         except Exception as exc:  # noqa: BLE001
-            bin_ok, bin_msg = False, str(exc)
+            bin_ok, bin_msg, bin_fill, binance_order = False, str(exc), None, None
         bin_elapsed_from_start = binance_timing.get(
             "elapsed_from_start",
             (time.perf_counter() - started_mono) * 1000,
         )
         bin_leg_duration = binance_timing.get("leg_duration", 0.0)
+        if bin_fill is None:
+            stored_fill = binance_timing.get("fill_price")
+            if isinstance(stored_fill, (int, float)):
+                bin_fill = float(stored_fill)
+        if binance_order is None:
+            stored_order = binance_timing.get("order")
+            if isinstance(stored_order, dict):
+                binance_order = stored_order
 
         self._log_leg_gap(mt5_elapsed_from_start, bin_elapsed_from_start, dry_run=False, action="Zárás")
 
         if mt5_ok and not bin_ok:
             self._log("Binance zárás sikertelen — újrapróbálás.")
-            retry = self._binance.close_all_positions(snapshot.binance_symbol)
-            bin_ok = retry[0]
-            bin_msg = retry[1]
+            bin_ok, bin_msg, bin_fill, binance_order = self._binance.close_all_positions(
+                snapshot.binance_symbol
+            )
         elif bin_ok and not mt5_ok:
             self._log("MT5 zárás sikertelen — újrapróbálás.")
             retry = self._run_on_main_thread(
                 lambda: self._mt5.close_all_positions(snapshot.mt5_symbol)
             )
             if retry is not None:
-                mt5_ok, mt5_msg = retry
+                mt5_ok, mt5_msg, mt5_fill = retry
 
         if not (mt5_ok and bin_ok):
             self._log("Hedge zárás hiányos — következő ticknél újra próbálkozik.")
+        elif mt5_ok and bin_ok:
+            self._schedule_fill_prices_log(
+                mt5_fill=mt5_fill,
+                binance_symbol=snapshot.binance_symbol,
+                binance_order=binance_order,
+                binance_fill=bin_fill,
+                label="Zárás fill ár",
+            )
 
         return (
             OrderLegResult("MT5", mt5_ok, mt5_msg, mt5_leg_duration),
@@ -465,13 +488,14 @@ class OrderExecutor:
         binance_symbol: str,
         binance_order: dict | None,
         binance_fill: float | None,
+        label: str = "Fill ár",
     ) -> None:
         def task() -> None:
             fill = binance_fill
             if fill is None and binance_order is not None:
                 fill = self._binance.poll_fill_price(binance_symbol, binance_order)
             self._log(
-                f"[Fill ár] MT5 @ {self._format_price(mt5_fill)} | "
+                f"[{label}] MT5 @ {self._format_price(mt5_fill)} | "
                 f"Binance @ {self._format_price(fill)}"
             )
 
