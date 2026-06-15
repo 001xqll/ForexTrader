@@ -31,6 +31,8 @@ from src.trading.tick_snapshot import TickSnapshot
 class TradingApp(tk.Tk):
     LOG_FONT = ("Consolas", 11)
     LOG_WARNING_FONT = ("Consolas", 11, "bold")
+    STATUS_OK_COLOR = "#16a34a"
+    STATUS_ERROR_COLOR = "#b91c1c"
     MARKET_CHECK_SEC = 30
     DEFAULT_WIDTH = 1120
     DEFAULT_HEIGHT = 1000
@@ -191,12 +193,20 @@ class TradingApp(tk.Tk):
         app_log(message)
 
     def _refresh_status_labels(self) -> None:
-        mt5_text = "MT5: csatlakozva" if self._mt5.is_connected else "MT5: nincs csatlakozva"
+        mt5_connected = self._mt5.is_connected
+        binance_connected = self._binance.is_connected
+        mt5_text = "MT5: csatlakozva" if mt5_connected else "MT5: nincs csatlakozva"
         binance_text = (
-            "Binance: csatlakozva" if self._binance.is_connected else "Binance: nincs csatlakozva"
+            "Binance: csatlakozva" if binance_connected else "Binance: nincs csatlakozva"
         )
-        self._mt5_status.configure(text=mt5_text)
-        self._binance_status.configure(text=binance_text)
+        self._mt5_status.configure(
+            text=mt5_text,
+            foreground=self.STATUS_OK_COLOR if mt5_connected else self.STATUS_ERROR_COLOR,
+        )
+        self._binance_status.configure(
+            text=binance_text,
+            foreground=self.STATUS_OK_COLOR if binance_connected else self.STATUS_ERROR_COLOR,
+        )
         self._update_market_status_label()
 
     @property
@@ -208,21 +218,36 @@ class TradingApp(tk.Tk):
             reason = self._runtime.strategy_engine.mismatch_reason
             self._market_status.configure(
                 text=f"Kereskedés: TILTVA (pozíció eltérés: {reason})",
-                foreground="#b91c1c",
+                foreground=self.STATUS_ERROR_COLOR,
             )
             return
 
-        self._market_status.configure(foreground="")
         config = load_config()
+        if bool(get_strategy_config(config).get("dry_run", True)):
+            self._market_status.configure(
+                text="Kereskedés: nem éles kereskedés (dry-run)",
+                foreground=self.STATUS_ERROR_COLOR,
+            )
+            return
+
         market_cfg = config.get("market_hours", {})
         if not market_cfg.get("enabled", True):
-            self._market_status.configure(text="Kereskedés: nincs időkorlát (ellenőrzés kikapcsolva)")
+            self._market_status.configure(
+                text="Kereskedés: nincs időkorlát (ellenőrzés kikapcsolva)",
+                foreground=self.STATUS_OK_COLOR,
+            )
             return
 
         if self.is_trading_allowed:
-            self._market_status.configure(text="Kereskedés: engedélyezve (piac nyitva)")
+            self._market_status.configure(
+                text="Kereskedés: engedélyezve (piac nyitva)",
+                foreground=self.STATUS_OK_COLOR,
+            )
         else:
-            self._market_status.configure(text="Kereskedés: várakozás piacnyitásra")
+            self._market_status.configure(
+                text="Kereskedés: várakozás piacnyitásra",
+                foreground=self.STATUS_ERROR_COLOR,
+            )
 
     def _start_market_watch(self) -> None:
         self._stop_market_watch()
@@ -387,6 +412,7 @@ class TradingApp(tk.Tk):
         self._log(f"Beállítások frissítve. Időzóna: {timezone}")
         self._reload_symbol_selector()
         self._apply_chart_strategy_levels()
+        self._refresh_status_labels()
         self._last_market_open = None
         self._check_market_status(force_log=True)
         if self._runtime_active:

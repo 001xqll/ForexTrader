@@ -243,7 +243,6 @@ class DiffChartPanel(ttk.Frame):
     def _draw_static(self, df_diff: pd.DataFrame) -> None:
         self._ax.clear()
         self._draw_candles(df_diff)
-        self._ax.axhline(0, color="#888888", linestyle=":", alpha=0.6)
         self._draw_strategy_levels()
 
         current_diff = float(df_diff["Close"].iloc[-1])
