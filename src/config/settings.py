@@ -68,8 +68,12 @@ def get_strategy_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     levels = merged.get("levels") or []
     merged["levels"] = sorted({float(level) for level in levels if float(level) > 0})
     merged["base"] = float(merged.get("base") or 0.0)
-    merged["exit_threshold"] = max(0.0, float(merged.get("exit_threshold") or 1.0))
-    merged["stop_loss"] = max(0.0, float(merged.get("stop_loss") or 15.0))
+    exit_raw = merged.get("exit_threshold")
+    merged["exit_threshold"] = max(
+        0.0, float(exit_raw if exit_raw is not None else 1.0)
+    )
+    stop_raw = merged.get("stop_loss")
+    merged["stop_loss"] = max(0.0, float(stop_raw if stop_raw is not None else 15.0))
     merged["lot_mt5"] = float(merged.get("lot_mt5") or 0.01)
     qty = float(merged.get("binance_quantity") or 0.0)
     if qty <= 0:
