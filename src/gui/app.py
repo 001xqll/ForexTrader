@@ -320,6 +320,32 @@ class TradingApp(tk.Tk):
     def _get_current_symbol(self) -> dict[str, str] | None:
         return get_selected_symbol(load_config())
 
+    @staticmethod
+    def _history_load_error(
+        symbol: dict[str, str],
+        mt5_rates: list | None,
+        binance_klines: list | None,
+        df_diff,
+    ) -> str:
+        mt5_sym = symbol.get("mt5", "")
+        bin_sym = symbol.get("binance", "")
+        if not mt5_rates:
+            return (
+                f"MT5 D1 adat hiányzik ({mt5_sym}) — ellenőrizd a szimbólumnevet "
+                "és hogy az MT5 terminálban van-e előzmény (nyisd meg a napi grafikont)."
+            )
+        if not binance_klines:
+            return (
+                f"Binance D1 adat hiányzik ({bin_sym}) — API hiba vagy rossz szimbólum "
+                "(demo/éles mód egyezik a kulccsal?)."
+            )
+        mt5_days = len(mt5_rates)
+        bin_days = len(binance_klines)
+        return (
+            f"MT5 ({mt5_days} nap) és Binance ({bin_days} nap) dátumai nem illeszkednek — "
+            "nincs közös nap az összevonáshoz."
+        )
+
     def _apply_chart_strategy_levels(self) -> None:
         strategy = get_strategy_config()
         self._chart.set_strategy_levels(
@@ -350,10 +376,16 @@ class TradingApp(tk.Tk):
             mt5_rates = self._mt5.get_daily_rates(symbol["mt5"], 30)
             binance_klines = self._binance.get_daily_klines(symbol["binance"], 30)
             df_diff = build_diff_dataframe(mt5_rates, binance_klines)
+            history_error = self._history_load_error(
+                symbol, mt5_rates, binance_klines, df_diff
+            )
 
             def finish() -> None:
                 if df_diff is None:
-                    self._log("Grafikon betöltés sikertelen (nincs elegendő történelmi adat).")
+                    self._log(
+                        "Grafikon betöltés sikertelen (nincs elegendő történelmi adat). "
+                        f"{history_error}"
+                    )
                     self._chart.clear()
                 else:
                     self._chart.set_history(
