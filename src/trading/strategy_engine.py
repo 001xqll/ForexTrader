@@ -206,14 +206,12 @@ class StrategyEngine:
                     self._log_spread_blocked(snapshot, strategy, "nyitás")
                     return
                 self._open_at_level(snapshot, level, "pos", lot_mt5, binance_qty, base)
-                return
 
             if diff <= base - level and not self._levels_hit.is_hit(level, "neg"):
                 if not self._spread_allows_trading(snapshot, strategy):
                     self._log_spread_blocked(snapshot, strategy, "nyitás")
                     return
                 self._open_at_level(snapshot, level, "neg", lot_mt5, binance_qty, base)
-                return
 
     @staticmethod
     def _spread_allows_trading(snapshot: TickSnapshot, strategy: dict) -> bool:
