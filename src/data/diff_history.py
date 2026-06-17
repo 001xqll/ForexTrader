@@ -14,8 +14,8 @@ def build_diff_dataframe(
 
     df_mt5 = pd.DataFrame(mt5_rates)
     df_mt5["time"] = pd.to_datetime(df_mt5["time"], unit="s")
-    df_mt5["date"] = df_mt5["time"].dt.strftime("%Y-%m-%d")
-    df_mt5 = df_mt5.set_index("date")[["open", "high", "low", "close"]]
+    df_mt5.set_index("time", inplace=True)
+    df_mt5 = df_mt5[["open", "high", "low", "close"]]
     df_mt5.columns = ["Open", "High", "Low", "Close"]
 
     df_bin = pd.DataFrame(
@@ -36,20 +36,12 @@ def build_diff_dataframe(
         ],
     )
     df_bin["time"] = pd.to_datetime(df_bin["time"], unit="ms")
-    df_bin["date"] = df_bin["time"].dt.strftime("%Y-%m-%d")
-    df_bin = df_bin.set_index("date")[["Open", "High", "Low", "Close"]].apply(pd.to_numeric)
+    df_bin.set_index("time", inplace=True)
+    df_bin = df_bin[["Open", "High", "Low", "Close"]].apply(pd.to_numeric)
 
-    common_dates = df_mt5.index.intersection(df_bin.index)
-    if len(common_dates) == 0:
-        return None
-
-    df_mt5 = df_mt5.loc[common_dates]
-    df_bin = df_bin.loc[common_dates]
-    df_diff = df_mt5.sub(df_bin)
+    df_diff = df_mt5.sub(df_bin).dropna()
     if df_diff.empty:
         return None
-
-    df_diff.index = pd.to_datetime(df_diff.index)
 
     df_diff["Volume"] = 1
     return df_diff.tail(30)
