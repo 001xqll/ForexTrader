@@ -111,34 +111,58 @@ class MT5Client:
                 "point": info.point,
             }
 
-    def get_daily_rates(self, symbol: str, count: int = 30) -> list[dict[str, Any]] | None:
+    def get_daily_rates(
+        self, symbol: str, count: int = 30
+    ) -> tuple[list[dict[str, Any]] | None, str]:
         if not self._connected or not symbol:
-            return None
+            return None, "MT5 nincs csatlakozva."
 
         import MetaTrader5 as mt5
+        from datetime import datetime, timedelta, timezone
 
         with self._api_lock:
             info = mt5.symbol_info(symbol)
             if info is None:
-                return None
+                return (
+                    None,
+                    f"Ismeretlen szimbólum: {symbol} — nézd meg az MT5 Market Watch pontos nevét "
+                    f"(pl. XAUUSD+, GOLD#).",
+                )
 
             if not info.visible and not mt5.symbol_select(symbol, True):
-                return None
+                err = mt5.last_error()
+                return (
+                    None,
+                    f"Szimbólum nem adható a Market Watch-hoz: {symbol} ({err}).",
+                )
 
             rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_D1, 0, count)
-            if rates is None:
-                return None
+            if rates is None or len(rates) == 0:
+                date_from = datetime.now(timezone.utc) - timedelta(days=count + 15)
+                rates = mt5.copy_rates_from(symbol, mt5.TIMEFRAME_D1, date_from, count)
 
-            return [
-                {
-                    "time": int(rate["time"]),
-                    "open": float(rate["open"]),
-                    "high": float(rate["high"]),
-                    "low": float(rate["low"]),
-                    "close": float(rate["close"]),
-                }
-                for rate in rates
-            ]
+            if rates is None or len(rates) == 0:
+                err = mt5.last_error()
+                return (
+                    None,
+                    f"Nincs D1 előzmény: {symbol} ({err}). "
+                    "Az MT5 terminálban nyisd meg a szimbólum napi (D1) grafikonját "
+                    "és görgess vissza, hogy letöltse a történetet.",
+                )
+
+            return (
+                [
+                    {
+                        "time": int(rate["time"]),
+                        "open": float(rate["open"]),
+                        "high": float(rate["high"]),
+                        "low": float(rate["low"]),
+                        "close": float(rate["close"]),
+                    }
+                    for rate in rates
+                ],
+                "",
+            )
 
     def open_market_order(
         self, symbol: str, side: str, volume: float

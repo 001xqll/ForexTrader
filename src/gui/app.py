@@ -326,10 +326,14 @@ class TradingApp(tk.Tk):
         mt5_rates: list | None,
         binance_klines: list | None,
         df_diff,
+        *,
+        mt5_detail: str = "",
     ) -> str:
         mt5_sym = symbol.get("mt5", "")
         bin_sym = symbol.get("binance", "")
         if not mt5_rates:
+            if mt5_detail:
+                return mt5_detail
             return (
                 f"MT5 D1 adat hiányzik ({mt5_sym}) — ellenőrizd a szimbólumnevet "
                 "és hogy az MT5 terminálban van-e előzmény (nyisd meg a napi grafikont)."
@@ -373,11 +377,11 @@ class TradingApp(tk.Tk):
         self._log("30 napos D1 grafikon betöltése...")
 
         def worker() -> None:
-            mt5_rates = self._mt5.get_daily_rates(symbol["mt5"], 30)
+            mt5_rates, mt5_detail = self._mt5.get_daily_rates(symbol["mt5"], 30)
             binance_klines = self._binance.get_daily_klines(symbol["binance"], 30)
             df_diff = build_diff_dataframe(mt5_rates, binance_klines)
             history_error = self._history_load_error(
-                symbol, mt5_rates, binance_klines, df_diff
+                symbol, mt5_rates, binance_klines, df_diff, mt5_detail=mt5_detail
             )
 
             def finish() -> None:
